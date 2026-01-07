@@ -1,0 +1,52 @@
+{
+  "name": "quantumiq",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "security:audit": "npm audit --production"
+  },
+  "dependencies": {
+    "@upstash/redis": "^1.36.0",
+    "bcryptjs": "^2.4.3",
+    "ethers": "^6.9.0",
+    "firebase": "^10.7.1",
+    "firebase-admin": "^12.0.0",
+    "ioredis": "^5.8.2",
+    "jose": "^5.10.0",
+    "jsonwebtoken": "^9.0.2",
+    "lru-cache": "^11.2.4",
+
+    "next": "16.1.1",
+    "react": "19.2.3",
+    "react-dom": "19.2.3",
+
+    "viem": "^2.43.5",
+    "zod": "^4.2.1"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/jsonwebtoken": "^9.0.5",
+    "@types/lru-cache": "^7.10.9",
+    "@types/node": "^20.10.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "autoprefixer": "^10.4.0",
+
+    "eslint": "^9.0.0",
+    "eslint-config-next": "16.1.1",
+
+    "postcss": "^8.4.0",
+    "tailwindcss": "^3.3.0",
+    "typescript": "^5.3.0"
+  },
+  "overrides": {
+    "glob": "^11.1.0",
+    "undici": "^6.21.2"
+  }
+}

@@ -6,7 +6,7 @@ import { checkRateLimit, getIdentifier } from './rateLimit';
 import { isPublicRoute } from '../config/routes';
 
 /**
- * Global authentication middleware
+ * Global authentication middleware with post-quantum security
  */
 export async function authenticateRequest(request: NextRequest): Promise<{
   authenticated: boolean;
@@ -41,24 +41,11 @@ export async function authenticateRequest(request: NextRequest): Promise<{
   }
 
   try {
-    // First try to verify as access token
-    let payload = await verifyAccessToken(token);
+    // Verify access token using post-quantum crypto
+    const payload = await verifyAccessToken(token);
     
     if (!payload) {
-      // If access token invalid, try session cookie verification
-      const sessionUser = await verifySessionCookie(token);
-      if (!sessionUser) {
-        return { authenticated: false, error: 'Invalid or expired token' };
-      }
-      
-      // Map session user to standard payload
-      payload = {
-        userId: sessionUser.uid || sessionUser.address || '',
-        tenantId: sessionUser.tenantId,
-        role: sessionUser.role || 'user',
-        exp: sessionUser.exp,
-        iat: sessionUser.iat
-      };
+      return { authenticated: false, error: 'Invalid or expired token' };
     }
 
     // Validate required fields
@@ -69,6 +56,19 @@ export async function authenticateRequest(request: NextRequest): Promise<{
     // Check for token expiration (duplicate check but explicit)
     if (payload.exp && Date.now() >= payload.exp * 1000) {
       return { authenticated: false, error: 'Token expired' };
+    }
+
+    // Validate device binding if present
+    if (payload.deviceFingerprint) {
+      const currentDeviceMatch = await validateDeviceBinding(request, payload.deviceFingerprint);
+      if (!currentDeviceMatch) {
+        logger.warn('Device binding validation failed', {
+          userId: payload.userId,
+          pathname,
+          tokenType: payload.type
+        });
+        return { authenticated: false, error: 'Device binding validation failed' };
+      }
     }
 
     return {
@@ -84,6 +84,38 @@ export async function authenticateRequest(request: NextRequest): Promise<{
       userId: token ? 'unknown' : undefined 
     });
     return { authenticated: false, error: 'Authentication failed' };
+  }
+}
+
+/**
+ * Validate device binding for session security
+ */
+async function validateDeviceBinding(request: NextRequest, expectedFingerprint: any): Promise<boolean> {
+  try {
+    const currentIp = getClientIp(request);
+    const currentUserAgent = request.headers.get('user-agent');
+    
+    // Compare device fingerprints
+    if (expectedFingerprint.userAgent && currentUserAgent !== expectedFingerprint.userAgent) {
+      logger.warn('User agent mismatch detected', {
+        expected: expectedFingerprint.userAgent,
+        actual: currentUserAgent
+      });
+      return false;
+    }
+    
+    if (expectedFingerprint.ipAddress && currentIp !== expectedFingerprint.ipAddress) {
+      logger.warn('IP address mismatch detected', {
+        expected: expectedFingerprint.ipAddress,
+        actual: currentIp
+      });
+      return false;
+    }
+    
+    return true;
+  } catch (error) {
+    logger.error('Device binding validation error', { error: (error as Error).message });
+    return false;
   }
 }
 

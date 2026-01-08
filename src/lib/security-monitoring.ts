@@ -12,6 +12,12 @@ export enum SecurityEvent {
   REPLAY_ATTACK_DETECTED = 'replay_attack_detected',
   UNAUTHORIZED_ACCESS = 'unauthorized_access',
   SUSPICIOUS_ACTIVITY = 'suspicious_activity',
+  PQ_CRYPTO_ERROR = 'pq_crypto_error',
+  PQ_SIGNATURE_INVALID = 'pq_signature_invalid',
+  PQ_KEY_COMPROMISE_SUSPECTED = 'pq_key_compromise_suspected',
+  DEVICE_BINDING_VIOLATION = 'device_binding_violation',
+  TOKEN_FRESHNESS_VIOLATION = 'token_freshness_violation',
+  GEO_IP_ANOMALY = 'geo_ip_anomaly',
 }
 
 // Security context for monitoring
@@ -43,9 +49,17 @@ export class SecurityMonitor {
       console.log('[SECURITY EVENT]', securityEvent);
     }
 
+    // Determine severity level based on event type
+    let level: 'info' | 'warning' | 'error' = 'info';
+    if (eventType.includes('ANOMALY') || eventType.includes('ATTEMPT') || eventType.includes('VIOLATION')) {
+      level = 'warning';
+    } else if (eventType.includes('ERROR') || eventType.includes('_FAILURE')) {
+      level = 'error';
+    }
+
     // Send to Sentry for monitoring
     Sentry.captureMessage(`Security Event: ${eventType}`, {
-      level: 'info',
+      level,
       contexts: {
         security: {
           event_type: eventType,
@@ -135,6 +149,66 @@ export class SecurityMonitor {
       ...context,
       timestamp: new Date(),
     }, `Suspicious activity: ${activity}`);
+  }
+
+  /**
+   * Log post-quantum cryptography error
+   */
+  static logPqCryptoError(context: Omit<SecurityContext, 'timestamp'>, error: string, operation: string): void {
+    this.logEvent(SecurityEvent.PQ_CRYPTO_ERROR, {
+      ...context,
+      timestamp: new Date(),
+    }, `Post-quantum crypto error during ${operation}: ${error}`);
+  }
+
+  /**
+   * Log invalid post-quantum signature
+   */
+  static logPqSignatureInvalid(context: Omit<SecurityContext, 'timestamp'>, details: string): void {
+    this.logEvent(SecurityEvent.PQ_SIGNATURE_INVALID, {
+      ...context,
+      timestamp: new Date(),
+    }, `Post-quantum signature validation failed: ${details}`);
+  }
+
+  /**
+   * Log suspected post-quantum key compromise
+   */
+  static logPqKeyCompromiseSuspected(context: Omit<SecurityContext, 'timestamp'>, keyId: string): void {
+    this.logEvent(SecurityEvent.PQ_KEY_COMPROMISE_SUSPECTED, {
+      ...context,
+      timestamp: new Date(),
+    }, `Post-quantum key compromise suspected: ${keyId}`);
+  }
+
+  /**
+   * Log device binding violation
+   */
+  static logDeviceBindingViolation(context: Omit<SecurityContext, 'timestamp'>, expected: string, actual: string): void {
+    this.logEvent(SecurityEvent.DEVICE_BINDING_VIOLATION, {
+      ...context,
+      timestamp: new Date(),
+    }, `Device binding violation: expected ${expected}, got ${actual}`);
+  }
+
+  /**
+   * Log token freshness violation
+   */
+  static logTokenFreshnessViolation(context: Omit<SecurityContext, 'timestamp'>, ageSeconds: number): void {
+    this.logEvent(SecurityEvent.TOKEN_FRESHNESS_VIOLATION, {
+      ...context,
+      timestamp: new Date(),
+    }, `Token freshness violation: token is ${ageSeconds} seconds old`);
+  }
+
+  /**
+   * Log geo/IP anomaly
+   */
+  static logGeoIpAnomaly(context: Omit<SecurityContext, 'timestamp'>, previousLocation?: string, currentLocation?: string): void {
+    this.logEvent(SecurityEvent.GEO_IP_ANOMALY, {
+      ...context,
+      timestamp: new Date(),
+    }, `Geographic/IP anomaly detected: ${previousLocation ? `from ${previousLocation} ` : ''}to ${currentLocation || 'unknown location'}`);
   }
 
   /**

@@ -3,6 +3,7 @@ import { verifyAccessToken } from '@/lib/tokenUtils';
 import jwt, { JwtPayload, VerifyOptions } from 'jsonwebtoken';
 import { Redis } from '@upstash/redis';
 import crypto from 'crypto';
+import { logger } from './logger';
 
 // ✅ Validation برای JWT secret
 const getJwtSecret = (): string => {
@@ -32,7 +33,7 @@ export type SessionUser = {
   iat?: number;
 };
 
-// --------- Session tracking (optional) ---------
+// --------- Session tracking with enhanced security ---------
 
 type SessionMeta = {
   userId: string;
@@ -40,6 +41,9 @@ type SessionMeta = {
   ipAddress?: string;
   userAgent?: string;
   createdAt: number;
+  lastAccessed: number;
+  lastAccessIp?: string;
+  lastAccessUserAgent?: string;
 };
 
 const SESSION_PREFIX = 'session:';
@@ -57,6 +61,7 @@ export function createSession(
     ipAddress: meta.ipAddress,
     userAgent: meta.userAgent,
     createdAt: Date.now(),
+    lastAccessed: Date.now(),
   };
 
   // Best-effort store. If Redis not configured, fall back to memory.
@@ -73,6 +78,7 @@ export function createSession(
     sessionMemory.set(sessionId, { meta: record, expiresAt });
   }
 
+  logger.info('Session created', { userId, sessionId, tenantId });
   return sessionId;
 }
 
@@ -82,12 +88,14 @@ export async function revokeSession(sessionId: string): Promise<void> {
     await redis.del(`${SESSION_PREFIX}${sessionId}`);
   }
   sessionMemory.delete(sessionId);
+  logger.info('Session revoked', { sessionId });
 }
 
 // ✅ اضافه کردن token به blacklist
 export async function addToBlacklist(token: string, expiresIn: number): Promise<void> {
   const key = `${BLACKLIST_PREFIX}${token}`;
   await redis.setex(key, expiresIn, '1');
+  logger.info('Token blacklisted', { token: key });
 }
 
 // ✅ بررسی blacklist
@@ -102,6 +110,7 @@ export async function verifyWalletToken(token: string): Promise<JwtPayload | nul
   try {
     // بررسی blacklist
     if (await isTokenBlacklisted(token)) {
+      logger.warn('Blacklisted token attempted', { token });
       return null;
     }
 
@@ -116,23 +125,35 @@ export async function verifyWalletToken(token: string): Promise<JwtPayload | nul
     
     // بررسی claimهای مورد نیاز
     if (decoded.type !== 'wallet' || !decoded.address) {
+      logger.warn('Invalid token claims', { token, decoded });
       return null;
+    }
+
+    // Check for replay attacks using jti
+    if (decoded.jti) {
+      const isReplay = await checkForReplayAttack(decoded.jti);
+      if (isReplay) {
+        logger.warn('Replay attack detected', { jti: decoded.jti, address: decoded.address });
+        // Blacklist the token
+        await addToBlacklist(token, 86400); // 24 hours
+        return null;
+      }
     }
 
     return decoded;
   } catch (error) {
-    console.error('JWT verification error:', error);
+    logger.error('JWT verification error', { error: (error as Error).message, token });
     return null;
   }
 }
 
-// ✅ Create wallet JWT
+// ✅ Create wallet JWT with enhanced security
 export function createWalletToken(user: {
   address: string;
   tenantId: string;
   role?: 'admin' | 'user';
 }): string {
-  return jwt.sign(
+  const token = jwt.sign(
     {
       type: 'wallet',
       address: user.address.toLowerCase(), // ✅ normalize address
@@ -148,9 +169,12 @@ export function createWalletToken(user: {
       jwtid: crypto.randomUUID(), // ✅ unique JWT ID برای revocation
     }
   );
+
+  logger.info('Wallet token created', { address: user.address, tenantId: user.tenantId });
+  return token;
 }
 
-// ✅ Verify session cookie
+// ✅ Verify session cookie with enhanced security
 export async function verifySessionCookie(
   cookieValue: string
 ): Promise<SessionUser | null> {
@@ -179,7 +203,9 @@ export async function verifySessionCookie(
       tenantId: decoded.tenantId,
       role: decoded.role || 'user',
     };
-  } catch {}
+  } catch (error) {
+    logger.warn('Firebase session verification failed', { error: (error as Error).message });
+  }
 
   // 2️⃣ Wallet JWT
   try {
@@ -194,17 +220,130 @@ export async function verifySessionCookie(
       exp: decoded.exp,
       iat: decoded.iat,
     };
-  } catch {
+  } catch (error) {
+    logger.error('Wallet token verification failed', { error: (error as Error).message });
     return null;
   }
 }
 
-// ✅ Revoke sessions
+// ✅ Revoke sessions with enhanced logging
 export async function revokeUserSessions(user: SessionUser): Promise<void> {
   if (user.type === 'firebase' && user.uid) {
     const adminAuth = getAdminAuthInstance();
     await adminAuth.revokeRefreshTokens(user.uid);
+    logger.info('Firebase user sessions revoked', { uid: user.uid });
   }
   // برای wallet sessions، باید client-side cookie پاک شود
   // server-side revocation با blacklist مدیریت می‌شود
+}
+
+// ✅ Enhanced session validation with binding checks
+export async function validateSessionBinding(
+  sessionId: string,
+  currentIp: string,
+  currentUserAgent: string
+): Promise<boolean> {
+  try {
+    let sessionData: SessionMeta | null = null;
+    
+    if (process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN) {
+      const redisData = await redis.get(`${SESSION_PREFIX}${sessionId}`);
+      if (redisData) {
+        sessionData = JSON.parse(redisData as string) as SessionMeta;
+      }
+    } else {
+      const memData = sessionMemory.get(sessionId);
+      if (memData && memData.expiresAt > Date.now()) {
+        sessionData = memData.meta;
+      }
+    }
+
+    if (!sessionData) {
+      logger.warn('Session not found during binding validation', { sessionId });
+      return false;
+    }
+
+    // Update last access info
+    sessionData.lastAccessed = Date.now();
+    sessionData.lastAccessIp = currentIp;
+    sessionData.lastAccessUserAgent = currentUserAgent;
+
+    // Store updated session data
+    if (process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN) {
+      const ttl = Math.floor((sessionData.createdAt + 7 * 24 * 60 * 60 * 1000 - Date.now()) / 1000);
+      if (ttl > 0) {
+        await redis.setex(`${SESSION_PREFIX}${sessionId}`, ttl, JSON.stringify(sessionData));
+      }
+    } else {
+      const expiresAt = sessionData.createdAt + 7 * 24 * 60 * 60 * 1000;
+      sessionMemory.set(sessionId, { meta: sessionData, expiresAt });
+    }
+
+    // Validate IP and User-Agent consistency (soft check)
+    const isIpConsistent = !sessionData.ipAddress || 
+                          currentIp.startsWith(sessionData.ipAddress.split(':')[0]) || 
+                          currentIp === sessionData.ipAddress;
+    
+    const isUserAgentConsistent = !sessionData.userAgent || 
+                                 currentUserAgent.includes(sessionData.userAgent.split(' ')[0]);
+
+    if (!isIpConsistent) {
+      logger.warn('IP inconsistency detected', { 
+        sessionId, 
+        originalIp: sessionData.ipAddress, 
+        currentIp,
+        userId: sessionData.userId
+      });
+    }
+
+    if (!isUserAgentConsistent) {
+      logger.warn('User-Agent inconsistency detected', { 
+        sessionId, 
+        originalUserAgent: sessionData.userAgent, 
+        currentUserAgent,
+        userId: sessionData.userId
+      });
+    }
+
+    return true; // Allow access even with inconsistencies, but log them
+  } catch (error) {
+    logger.error('Session binding validation error', { 
+      error: (error as Error).message, 
+      sessionId,
+      currentIp,
+      currentUserAgent
+    });
+    return false;
+  }
+}
+
+// ✅ Check for replay attacks using JWT ID (jti)
+const usedJtiStore = new Set<string>();
+const JWT_CLEANUP_INTERVAL = 60 * 60 * 1000; // 1 hour
+
+// Clean up old JTIs periodically
+setInterval(() => {
+  usedJtiStore.clear(); // In production, implement proper TTL with Redis
+}, JWT_CLEANUP_INTERVAL);
+
+async function checkForReplayAttack(jti: string): Promise<boolean> {
+  if (usedJtiStore.has(jti)) {
+    return true; // Replay attack detected
+  }
+  
+  usedJtiStore.add(jti);
+  return false;
+}
+
+// ✅ Revoke all sessions for a user
+export async function revokeAllUserSessions(userId: string): Promise<void> {
+  // In a real implementation with proper session tracking, 
+  // you would search for all sessions belonging to the user
+  // For now, we'll just log this action
+  logger.info('Revoking all sessions for user', { userId });
+  
+  // Implementation would involve:
+  // 1. Querying Redis for all sessions with this userId
+  // 2. Revoking each session individually
+  // 3. Blacklisting associated tokens
 }

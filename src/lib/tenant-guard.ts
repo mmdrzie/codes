@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { verifyAccessToken } from './token';
+import { verifyAccessToken } from './tokenUtils';
 import { logger } from './logger';
 
 export interface TenantUser {

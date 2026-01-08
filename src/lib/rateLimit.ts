@@ -1,4 +1,6 @@
 import { NextRequest } from 'next/server';
+import { Redis } from '@upstash/redis';
+import { logger } from './logger';
 
 // تنظیمات Rate Limit برای endpoint های مختلف
 export const RATE_LIMITS = {
@@ -26,6 +28,16 @@ export const RATE_LIMITS = {
     max: 3,
     window: 60 * 60 * 1000, // 1 ساعت
     message: 'Too many password reset attempts. Please try again in 1 hour.'
+  },
+  nonce: {
+    max: 5,
+    window: 5 * 60 * 1000, // 5 minutes
+    message: 'Too many nonce requests. Please try again later.'
+  },
+  refresh: {
+    max: 10,
+    window: 5 * 60 * 1000, // 5 minutes
+    message: 'Too many token refresh attempts. Please try again later.'
   }
 } as const;
 
@@ -36,6 +48,11 @@ interface RateLimitRecord {
   blocked: boolean;
   blockedUntil?: number;
 }
+
+// Redis for rate limiting (production ready)
+const redis = Redis.fromEnv();
+const RATE_LIMIT_PREFIX = 'rate_limit:';
+const BLOCKED_PREFIX = 'rate_limit:blocked:';
 
 // ذخیره‌سازی request ها (در production از Redis استفاده کنید)
 const requestStore = new Map<string, RateLimitRecord>();
@@ -61,7 +78,7 @@ function startCleanup() {
     keysToDelete.forEach(key => requestStore.delete(key));
 
     if (keysToDelete.length > 0) {
-      console.log(`Cleaned up ${keysToDelete.length} old rate limit records`);
+      logger.info(`Cleaned up ${keysToDelete.length} old rate limit records`);
     }
   }, CLEANUP_INTERVAL);
 }
@@ -78,56 +95,85 @@ export function getIdentifier(request: NextRequest, userId?: string): string {
     return `user:${userId}`;
   }
 
-  // IP address
+  // IP address with additional security measures
   const forwarded = request.headers.get('x-forwarded-for');
-  const ip = forwarded ? forwarded.split(',')[0] : 
-             request.headers.get('x-real-ip') || 
+  const realIp = request.headers.get('x-real-ip');
+  const cloudflareIp = request.headers.get('cf-connecting-ip');
+  
+  const ip = forwarded ? forwarded.split(',')[0]?.trim() : 
+             realIp ? realIp.trim() :
+             cloudflareIp ? cloudflareIp.trim() :
              'unknown';
 
-  return `ip:${ip}`;
+  // Sanitize IP to prevent injection
+  const sanitizedIp = ip.replace(/[^0-9a-fA-F:.]/g, '');
+  
+  return `ip:${sanitizedIp}`;
 }
 
 /**
  * بررسی Rate Limit
  */
-export function checkRateLimit(
+export async function checkRateLimit(
   identifier: string,
   type: RateLimitType
-): {
+): Promise<{
   allowed: boolean;
   remaining: number;
   resetAt: number;
   message?: string;
-} {
+}> {
   const config = RATE_LIMITS[type];
   const now = Date.now();
-  const key = `${type}:${identifier}`;
+  const key = `${RATE_LIMIT_PREFIX}${type}:${identifier}`;
+  const blockedKey = `${BLOCKED_PREFIX}${type}:${identifier}`;
+
+  // Check if identifier is blocked
+  if (process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN) {
+    try {
+      const isBlocked = await redis.get(blockedKey);
+      if (isBlocked) {
+        const blockUntil = await redis.ttl(blockedKey);
+        const resetAt = now + (blockUntil * 1000);
+        
+        logger.warn('Rate limit blocked request', { 
+          identifier, 
+          type, 
+          resetAt: new Date(resetAt).toISOString() 
+        });
+        
+        return {
+          allowed: false,
+          remaining: 0,
+          resetAt,
+          message: config.message
+        };
+      }
+    } catch (error) {
+      logger.error('Redis error in rate limit check', { error: (error as Error).message });
+      // Fallback to in-memory if Redis fails
+    }
+  }
 
   // دریافت یا ایجاد record
-  let record = requestStore.get(key);
+  let record: RateLimitRecord | null = null;
+
+  if (process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN) {
+    try {
+      const redisData = await redis.get(key);
+      if (redisData) {
+        record = redisData as RateLimitRecord;
+      }
+    } catch (error) {
+      logger.error('Redis get error', { error: (error as Error).message });
+    }
+  }
 
   if (!record) {
     record = {
       timestamps: [],
       blocked: false
     };
-  }
-
-  // بررسی block
-  if (record.blocked && record.blockedUntil) {
-    if (now < record.blockedUntil) {
-      return {
-        allowed: false,
-        remaining: 0,
-        resetAt: record.blockedUntil,
-        message: config.message
-      };
-    } else {
-      // رفع block
-      record.blocked = false;
-      record.blockedUntil = undefined;
-      record.timestamps = [];
-    }
   }
 
   // فیلتر کردن timestamp های داخل window
@@ -138,14 +184,37 @@ export function checkRateLimit(
   // بررسی محدودیت
   if (validTimestamps.length >= config.max) {
     // مسدود کردن identifier
+    const blockDuration = config.window;
     record.blocked = true;
-    record.blockedUntil = now + config.window;
-    requestStore.set(key, record);
+    
+    if (process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN) {
+      try {
+        // Store block status in Redis
+        await redis.setex(blockedKey, Math.floor(blockDuration / 1000), '1');
+        // Clean up the request count
+        await redis.del(key);
+      } catch (error) {
+        logger.error('Redis set error in rate limiting', { error: (error as Error).message });
+      }
+    } else {
+      // Fallback to in-memory storage
+      record.blockedUntil = now + blockDuration;
+      requestStore.set(key, record);
+    }
+
+    const resetAt = now + blockDuration;
+    
+    logger.warn('Rate limit exceeded', { 
+      identifier, 
+      type, 
+      attempts: validTimestamps.length,
+      resetAt: new Date(resetAt).toISOString() 
+    });
 
     return {
       allowed: false,
       remaining: 0,
-      resetAt: record.blockedUntil,
+      resetAt,
       message: config.message
     };
   }
@@ -153,14 +222,36 @@ export function checkRateLimit(
   // اضافه کردن timestamp جدید
   validTimestamps.push(now);
   record.timestamps = validTimestamps;
-  requestStore.set(key, record);
+
+  // Store in Redis or memory
+  if (process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN) {
+    try {
+      await redis.setex(key, Math.floor(config.window / 1000), record);
+    } catch (error) {
+      logger.error('Redis set error', { error: (error as Error).message });
+      // Fallback to in-memory
+      requestStore.set(key, record);
+    }
+  } else {
+    requestStore.set(key, record);
+  }
 
   const oldestTimestamp = validTimestamps[0];
   const resetAt = oldestTimestamp ? oldestTimestamp + config.window : now + config.window;
 
+  const remaining = Math.max(0, config.max - validTimestamps.length);
+
+  logger.debug('Rate limit check', { 
+    identifier, 
+    type, 
+    remaining,
+    attempts: validTimestamps.length,
+    max: config.max
+  });
+
   return {
     allowed: true,
-    remaining: config.max - validTimestamps.length,
+    remaining,
     resetAt
   };
 }
@@ -171,7 +262,7 @@ export function checkRateLimit(
 export function rateLimitMiddleware(type: RateLimitType) {
   return async (request: NextRequest, userId?: string) => {
     const identifier = getIdentifier(request, userId);
-    const result = checkRateLimit(identifier, type);
+    const result = await checkRateLimit(identifier, type);
 
     return result;
   };
@@ -180,63 +271,127 @@ export function rateLimitMiddleware(type: RateLimitType) {
 /**
  * ریست کردن Rate Limit برای یک identifier
  */
-export function resetRateLimit(identifier: string, type: RateLimitType): void {
-  const key = `${type}:${identifier}`;
-  requestStore.delete(key);
-  console.log(`Rate limit reset for ${key}`);
+export async function resetRateLimit(identifier: string, type: RateLimitType): Promise<void> {
+  const key = `${RATE_LIMIT_PREFIX}${type}:${identifier}`;
+  const blockedKey = `${BLOCKED_PREFIX}${type}:${identifier}`;
+  
+  if (process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN) {
+    try {
+      await redis.del(key);
+      await redis.del(blockedKey);
+      logger.info('Rate limit reset', { identifier, type });
+    } catch (error) {
+      logger.error('Redis delete error in rate limit reset', { error: (error as Error).message });
+      requestStore.delete(key);
+    }
+  } else {
+    requestStore.delete(key);
+    logger.info('Rate limit reset', { identifier, type });
+  }
 }
 
 /**
  * Block کردن دستی یک identifier
  */
-export function blockIdentifier(
+export async function blockIdentifier(
   identifier: string,
   type: RateLimitType,
   durationMs?: number
-): void {
+): Promise<void> {
   const config = RATE_LIMITS[type];
-  const key = `${type}:${identifier}`;
-  const now = Date.now();
+  const blockedKey = `${BLOCKED_PREFIX}${type}:${identifier}`;
+  const duration = durationMs || config.window;
 
-  const record: RateLimitRecord = {
-    timestamps: [],
-    blocked: true,
-    blockedUntil: now + (durationMs || config.window)
-  };
-
-  requestStore.set(key, record);
-  
-  const blockedUntil = record.blockedUntil;
-  if (blockedUntil) {
-    console.log(`Identifier blocked: ${key} until ${new Date(blockedUntil).toISOString()}`);
+  if (process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN) {
+    try {
+      await redis.setex(blockedKey, Math.floor(duration / 1000), '1');
+      logger.warn('Identifier manually blocked', { 
+        identifier, 
+        type, 
+        duration: `${duration}ms`,
+        until: new Date(Date.now() + duration).toISOString() 
+      });
+    } catch (error) {
+      logger.error('Redis set error in manual block', { error: (error as Error).message });
+    }
+  } else {
+    const key = `${RATE_LIMIT_PREFIX}${type}:${identifier}`;
+    const record: RateLimitRecord = {
+      timestamps: [],
+      blocked: true,
+      blockedUntil: Date.now() + duration
+    };
+    requestStore.set(key, record);
+    logger.warn('Identifier manually blocked (in-memory)', { 
+      identifier, 
+      type,
+      duration: `${duration}ms` 
+    });
   }
 }
 
 /**
  * Unblock کردن یک identifier
  */
-export function unblockIdentifier(identifier: string, type: RateLimitType): void {
-  const key = `${type}:${identifier}`;
-  requestStore.delete(key);
-  console.log(`Identifier unblocked: ${key}`);
+export async function unblockIdentifier(identifier: string, type: RateLimitType): Promise<void> {
+  const blockedKey = `${BLOCKED_PREFIX}${type}:${identifier}`;
+  
+  if (process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN) {
+    try {
+      await redis.del(blockedKey);
+      logger.info('Identifier manually unblocked', { identifier, type });
+    } catch (error) {
+      logger.error('Redis delete error in manual unblock', { error: (error as Error).message });
+    }
+  } else {
+    const key = `${RATE_LIMIT_PREFIX}${type}:${identifier}`;
+    const record = requestStore.get(key);
+    if (record) {
+      record.blocked = false;
+      record.blockedUntil = undefined;
+    }
+    logger.info('Identifier manually unblocked', { identifier, type });
+  }
 }
 
 /**
  * دریافت وضعیت Rate Limit
  */
-export function getRateLimitStatus(identifier: string, type: RateLimitType) {
-  const key = `${type}:${identifier}`;
-  const record = requestStore.get(key);
+export async function getRateLimitStatus(identifier: string, type: RateLimitType) {
+  const key = `${RATE_LIMIT_PREFIX}${type}:${identifier}`;
+  const blockedKey = `${BLOCKED_PREFIX}${type}:${identifier}`;
   const config = RATE_LIMITS[type];
   const now = Date.now();
 
+  let record: RateLimitRecord | null = null;
+
+  if (process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN) {
+    try {
+      const redisData = await redis.get(key);
+      if (redisData) {
+        record = redisData as RateLimitRecord;
+      }
+    } catch (error) {
+      logger.error('Redis get error in status check', { error: (error as Error).message });
+    }
+  }
+
   if (!record) {
-    return {
-      requests: 0,
-      max: config.max,
-      blocked: false,
-      resetAt: null
+    record = requestStore.get(key) || {
+      timestamps: [],
+      blocked: false
     };
+  }
+
+  // Check if blocked
+  let isBlocked = record.blocked;
+  if (process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN) {
+    try {
+      const blocked = await redis.get(blockedKey);
+      isBlocked = !!blocked;
+    } catch (error) {
+      logger.error('Redis get error in blocked check', { error: (error as Error).message });
+    }
   }
 
   const validTimestamps = record.timestamps.filter(
@@ -244,27 +399,42 @@ export function getRateLimitStatus(identifier: string, type: RateLimitType) {
   );
 
   const oldestTimestamp = validTimestamps[0];
-  const calculatedResetAt = oldestTimestamp ? oldestTimestamp + config.window : null;
+  let calculatedResetAt = oldestTimestamp ? oldestTimestamp + config.window : null;
+
+  if (isBlocked) {
+    if (process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN) {
+      try {
+        const ttl = await redis.ttl(blockedKey);
+        calculatedResetAt = now + (ttl * 1000);
+      } catch (error) {
+        logger.error('Redis TTL error', { error: (error as Error).message });
+      }
+    } else if (record.blockedUntil) {
+      calculatedResetAt = record.blockedUntil;
+    }
+  }
 
   return {
     requests: validTimestamps.length,
     max: config.max,
-    blocked: record.blocked,
-    resetAt: record.blockedUntil || calculatedResetAt
+    blocked: isBlocked,
+    resetAt: calculatedResetAt
   };
 }
 
 /**
  * آمار کلی Rate Limit
  */
-export function getRateLimitStats() {
+export async function getRateLimitStats() {
   const stats: Record<string, { total: number; blocked: number; active: number }> = {};
 
+  // This would require scanning Redis keys in production
+  // For now, we'll just return in-memory stats
   for (const [key, record] of requestStore.entries()) {
     const parts = key.split(':');
-    const type = parts[0];
+    const type = parts[1] as RateLimitType;
     
-    if (!type) continue;
+    if (!type || !RATE_LIMITS[type]) continue;
     
     if (!stats[type]) {
       stats[type] = {
@@ -283,5 +453,6 @@ export function getRateLimitStats() {
     }
   }
 
+  logger.info('Rate limit stats', { stats });
   return stats;
 }

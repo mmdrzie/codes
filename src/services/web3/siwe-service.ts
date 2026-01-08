@@ -5,6 +5,8 @@ import { jwtVerify, SignJWT } from 'jose';
 import { nanoid } from 'nanoid';
 import { getAddress, toBytes, keccak256 } from 'viem';
 import { logger } from '@/lib/logger';
+import { PQCryptoService } from '@/services/crypto/pq-crypto-service';
+import { generateAccessToken, generateRefreshToken, AppJwtPayload } from '@/lib/tokenUtils';
 
 // In-memory store for nonces with proper security (in production, use Redis or database)
 const nonceStore = new Map<string, { 
@@ -263,11 +265,11 @@ export class SiweService {
   }
 
   /**
-   * Create a secure session token for Web3 user with proper security
+   * Create a secure session token for Web3 user with post-quantum security
    */
   static async createSecureSessionToken(
     user: Web3User, 
-    expiresIn: string = '24h',
+    deviceFingerprint?: { userAgent?: string; ipAddress?: string; sessionId?: string },
     additionalClaims?: Record<string, any>
   ): Promise<string> {
     try {
@@ -276,25 +278,20 @@ export class SiweService {
         throw new Error('Invalid user address');
       }
       
-      // Create JWT with security best practices
-      const token = await new SignJWT({ 
-        address: user.address,
+      // Prepare the payload for the new token system
+      const tokenPayload = {
+        userId: user.address,
+        walletAddress: user.address,
         chainId: user.chainId,
-        type: 'web3',
+        authMethod: 'wallet' as const,
+        type: 'access' as const,
         ...additionalClaims
-      })
-        .setProtectedHeader({ alg: 'HS256' })
-        .setIssuedAt()
-        .setExpirationTime(expiresIn)
-        .setNotBefore(0) // Don't allow backdating
-        .setJti(nanoid()) // JWT ID for replay protection
-        .setIssuer('siwe-service') // Set issuer for validation
-        .setAudience('your-app-audience') // Set audience for validation
-        .sign(new TextEncoder().encode(
-          process.env.WEB3_JWT_SECRET || 'default_web3_secret_for_dev'
-        ));
+      };
 
-      logger.info('Web3 session token created', { 
+      // Generate access token using post-quantum crypto
+      const token = await generateAccessToken(tokenPayload, deviceFingerprint);
+
+      logger.info('Web3 session token created with PQ security', { 
         address: user.address,
         chainId: user.chainId 
       });
@@ -314,40 +311,27 @@ export class SiweService {
    */
   static async verifySecureSessionToken(token: string): Promise<AuthUser> {
     try {
-      const secret = new TextEncoder().encode(
-        process.env.WEB3_JWT_SECRET || 'default_web3_secret_for_dev'
-      );
+      // Verify JWT with post-quantum security
+      const payload = await verifyAccessToken(token);
       
-      // Verify JWT with strict validation
-      const { payload } = await jwtVerify(token, secret, {
-        algorithms: ['HS256'],
-        audience: 'your-app-audience',
-        issuer: 'siwe-service',
-        clockTolerance: '5s',
-      });
+      if (!payload) {
+        throw new Error('Invalid token: failed post-quantum verification');
+      }
       
       // Validate required fields
-      if (!payload.address) {
+      if (!payload.userId) {
         throw new Error('Invalid token: missing address');
       }
       
-      if (!this.validateEthereumAddress(payload.address as string)) {
+      if (!this.validateEthereumAddress(payload.userId as string)) {
         throw new Error('Invalid token: invalid address format');
       }
 
-      // Check for replay attacks using jti
-      if (payload.jti) {
-        const isReplay = await this.checkForReplayAttack(payload.jti as string);
-        if (isReplay) {
-          throw new Error('Replay attack detected');
-        }
-      }
-
       const authUser: AuthUser = {
-        id: payload.address as string,
+        id: payload.userId as string,
         type: 'web3',
         web3User: {
-          address: payload.address as string,
+          address: payload.userId as string,
           chainId: payload.chainId as number,
           nonce: payload.nonce as string || '',
           issuedAt: payload.issuedAt ? new Date(payload.issuedAt as number * 1000).toISOString() : new Date().toISOString(),
@@ -358,8 +342,8 @@ export class SiweService {
         isVerified: true, // Web3 users are verified by signature
       };
 
-      logger.info('Web3 session token verified', { 
-        address: payload.address,
+      logger.info('Web3 session token verified with PQ security', { 
+        address: payload.userId,
         userId: authUser.id 
       });
 

@@ -18,6 +18,7 @@ const AUDIENCE = 'quantumiq-web';
 const redis = Redis.fromEnv();
 const REFRESH_TOKEN_BLACKLIST_PREFIX = 'refresh_blacklist:';
 const REFRESH_TOKEN_USED_PREFIX = 'refresh_used:';
+const ACCESS_TOKEN_USED_PREFIX = 'access_used:';
 
 const getSecrets = () => {
   const accessSecret = process.env.JWT_ACCESS_SECRET || process.env.JWT_SECRET;
@@ -111,7 +112,7 @@ export function generateTokenPair(payload: Omit<AppJwtPayload, 'type' | 'iat' | 
   };
 }
 
-export function verifyAccessToken(token: string): AppJwtPayload | null {
+export async function verifyAccessToken(token: string): Promise<AppJwtPayload | null> {
   try {
     const { accessSecret } = getSecrets();
     const decoded = jwt.verify(token, accessSecret, verifyOptions()) as AppJwtPayload;
@@ -119,7 +120,7 @@ export function verifyAccessToken(token: string): AppJwtPayload | null {
     
     // Check for replay attacks using jti
     if (decoded.jti) {
-      const isReplay = checkAccessTokenReplay(decoded.jti);
+      const isReplay = await checkAccessTokenReplay(decoded.jti);
       if (isReplay) {
         logger.warn('Access token replay attack detected', { jti: decoded.jti, userId: decoded.userId });
         return null;
@@ -234,11 +235,32 @@ export async function revokeUserTokens(userId: string): Promise<void> {
   // For now, we just log the action
 }
 
-// Check for access token replay attacks
-function checkAccessTokenReplay(jti: string): boolean {
-  // In a production system, you'd use Redis to track used access tokens
-  // Since access tokens are short-lived, this is less critical than refresh token replay
-  // For now, we'll use an in-memory set with cleanup
+// Check for access token replay attacks using Redis
+async function checkAccessTokenReplay(jti: string): Promise<boolean> {
+  // Use Redis to track used access tokens for replay protection
+  const key = `${ACCESS_TOKEN_USED_PREFIX}${jti}`;
+  
+  try {
+    // Check if token was already used
+    const result = await redis.get(key);
+    if (result !== null) {
+      return true; // Replay attack detected
+    }
+    
+    // Mark token as used with TTL equal to access token TTL
+    await redis.setex(key, ACCESS_TTL_SECONDS, '1');
+    return false;
+  } catch (error) {
+    logger.error('Redis error in access token replay check', { error: (error as Error).message, jti });
+    // Fallback to in-memory tracking if Redis fails
+    return checkAccessTokenReplayInMemory(jti);
+  }
+}
+
+// In-memory fallback for access token replay protection
+const usedAccessTokens = new Set<string>();
+
+function checkAccessTokenReplayInMemory(jti: string): boolean {
   if (usedAccessTokens.has(jti)) {
     return true;
   }
@@ -248,9 +270,6 @@ function checkAccessTokenReplay(jti: string): boolean {
   setTimeout(() => usedAccessTokens.delete(jti), ACCESS_TTL_SECONDS * 1000);
   return false;
 }
-
-// In-memory tracking for access token replay (in production, use Redis)
-const usedAccessTokens = new Set<string>();
 
 export function decodeTokenUnsafe(token: string): AppJwtPayload | null {
   try {

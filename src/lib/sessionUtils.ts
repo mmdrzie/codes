@@ -181,7 +181,7 @@ export async function verifySessionCookie(
   if (!cookieValue) return null;
 
   // 0️⃣ App access JWT
-  const app = verifyAccessToken(cookieValue);
+  const app = await verifyAccessToken(cookieValue);
   if (app) {
     return {
       type: 'session',
@@ -305,7 +305,35 @@ export async function validateSessionBinding(
       });
     }
 
-    return true; // Allow access even with inconsistencies, but log them
+    // For high security applications, fail on binding inconsistencies
+    // For moderate security, allow with warning (current behavior)
+    // Returning false will enforce strict binding
+    const STRICT_SESSION_BINDING = process.env.STRICT_SESSION_BINDING === 'true';
+    if (STRICT_SESSION_BINDING && (!isIpConsistent || !isUserAgentConsistent)) {
+      logger.warn('Session binding validation failed - access denied due to strict mode', { 
+        sessionId, 
+        userId: sessionData.userId,
+        isIpConsistent,
+        isUserAgentConsistent
+      });
+      return false;
+    }
+
+    // Still return true to allow access but log inconsistencies, but add a security enhancement
+    // to track suspicious patterns over time
+    if (!isIpConsistent || !isUserAgentConsistent) {
+      logger.info('Session binding inconsistency detected but allowed due to non-strict mode', { 
+        sessionId, 
+        userId: sessionData.userId,
+        isIpConsistent,
+        isUserAgentConsistent
+      });
+      
+      // Optional: Implement pattern detection for suspicious access patterns
+      // This could trigger additional security measures if patterns repeat
+    }
+
+    return true; // Allow access but log inconsistencies
   } catch (error) {
     logger.error('Session binding validation error', { 
       error: (error as Error).message, 
@@ -318,6 +346,27 @@ export async function validateSessionBinding(
 }
 
 // ✅ Check for replay attacks using JWT ID (jti)
+async function checkForReplayAttack(jti: string): Promise<boolean> {
+  const key = `${BLACKLIST_PREFIX}replay:${jti}`;
+  
+  try {
+    // Check if token was already used (using Redis)
+    const result = await redis.get(key);
+    if (result !== null) {
+      return true; // Replay attack detected
+    }
+    
+    // Mark token as used with TTL equal to token TTL (or reasonable default)
+    await redis.setex(key, 86400, '1'); // 24 hours TTL
+    return false;
+  } catch (error) {
+    logger.error('Redis error in replay attack check', { error: (error as Error).message, jti });
+    // Fallback to in-memory tracking if Redis fails
+    return checkForReplayAttackInMemory(jti);
+  }
+}
+
+// In-memory fallback for replay attack protection
 const usedJtiStore = new Set<string>();
 const JWT_CLEANUP_INTERVAL = 60 * 60 * 1000; // 1 hour
 
@@ -326,7 +375,7 @@ setInterval(() => {
   usedJtiStore.clear(); // In production, implement proper TTL with Redis
 }, JWT_CLEANUP_INTERVAL);
 
-async function checkForReplayAttack(jti: string): Promise<boolean> {
+function checkForReplayAttackInMemory(jti: string): boolean {
   if (usedJtiStore.has(jti)) {
     return true; // Replay attack detected
   }

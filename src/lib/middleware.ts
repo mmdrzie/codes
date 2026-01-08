@@ -3,34 +3,7 @@ import { verifyAccessToken } from './tokenUtils';
 import { verifySessionCookie } from './sessionUtils';
 import { logger } from './logger';
 import { checkRateLimit, getIdentifier } from './rateLimit';
-
-// Public routes that don't require authentication
-const PUBLIC_ROUTES = [
-  '/',
-  '/login',
-  '/register',
-  '/api/auth/login',
-  '/api/auth/register',
-  '/api/auth/wallet/nonce',
-  '/api/auth/wallet',
-  '/api/auth/refresh',
-  '/api/auth/sync-firebase',
-  '/api/auth/logout',
-  '/api/web3/nonce',
-  '/api/web3/signin'
-];
-
-// Public API routes that don't require authentication
-const PUBLIC_API_ROUTES = [
-  '/api/auth/login',
-  '/api/auth/register',
-  '/api/auth/wallet/nonce',
-  '/api/auth/wallet',
-  '/api/auth/refresh',
-  '/api/auth/sync-firebase',
-  '/api/web3/nonce',
-  '/api/web3/signin'
-];
+import { isPublicRoute } from '../config/routes';
 
 /**
  * Global authentication middleware
@@ -45,11 +18,7 @@ export async function authenticateRequest(request: NextRequest): Promise<{
   const { pathname } = request.nextUrl;
 
   // Allow public routes without authentication
-  if (PUBLIC_ROUTES.some(route => 
-    pathname === route || 
-    pathname.startsWith(route + '/') ||
-    (route.endsWith('/') && pathname.startsWith(route))
-  )) {
+  if (isPublicRoute(pathname)) {
     return { authenticated: true }; // Public routes are considered authenticated for this check
   }
 
@@ -73,7 +42,7 @@ export async function authenticateRequest(request: NextRequest): Promise<{
 
   try {
     // First try to verify as access token
-    let payload = verifyAccessToken(token);
+    let payload = await verifyAccessToken(token);
     
     if (!payload) {
       // If access token invalid, try session cookie verification

@@ -1,36 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { authenticateRequest, applyRateLimiting, validateSessionBinding, addSecurityHeaders } from './src/lib/middleware';
 import { logger } from './src/lib/logger';
-
-// Public routes that don't require authentication
-const PUBLIC_ROUTES = [
-  '/',
-  '/login',
-  '/register',
-  '/api/auth/login',
-  '/api/auth/register',
-  '/api/auth/wallet/nonce',
-  '/api/auth/wallet',
-  '/api/auth/refresh',
-  '/api/auth/sync-firebase',
-  '/api/auth/logout',
-  '/api/web3/nonce',
-  '/api/web3/signin',
-  '/api/auth/session'
-];
-
-// Public API routes that don't require authentication
-const PUBLIC_API_ROUTES = [
-  '/api/auth/login',
-  '/api/auth/register',
-  '/api/auth/wallet/nonce',
-  '/api/auth/wallet',
-  '/api/auth/refresh',
-  '/api/auth/sync-firebase',
-  '/api/web3/nonce',
-  '/api/web3/signin',
-  '/api/auth/session'
-];
+import { isPublicRoute, isProtectedRoute } from './src/config/routes';
 
 /**
  * Enhanced security middleware with authentication, rate limiting, and security headers
@@ -45,11 +16,7 @@ export async function middleware(req: NextRequest) {
   }
 
   // Check if route is public (no authentication required)
-  const isPublicRoute = PUBLIC_ROUTES.some(route => 
-    pathname === route || 
-    pathname.startsWith(route + '/') ||
-    (route.endsWith('/') && pathname.startsWith(route))
-  );
+  const isPublicRoute = isPublicRoute(pathname);
 
   if (!isPublicRoute) {
     // Authenticate protected routes

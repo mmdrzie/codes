@@ -4,6 +4,18 @@ import { logger } from './src/lib/logger';
 import { isPublicRoute, isProtectedRoute } from './src/config/routes';
 
 /**
+ * Auth Context interface for verified authentication state
+ */
+export interface AuthContext {
+  authenticated: boolean;
+  userId?: string;
+  tenantId?: string;
+  role?: string;
+  error?: string;
+  timestamp: number;
+}
+
+/**
  * Enhanced security middleware with authentication, rate limiting, and security headers
  */
 export async function middleware(req: NextRequest) {
@@ -18,21 +30,33 @@ export async function middleware(req: NextRequest) {
   // Check if route is public (no authentication required)
   const isPublicRoute = isPublicRoute(pathname);
 
+  // Initialize default auth context (fail closed)
+  let authContext: AuthContext = {
+    authenticated: false,
+    error: 'No authentication provided',
+    timestamp: Date.now()
+  };
+
   if (!isPublicRoute) {
     // Authenticate protected routes
     const authResult = await authenticateRequest(req);
+    authContext = {
+      ...authResult,
+      timestamp: Date.now()
+    };
 
-    if (!authResult.authenticated) {
+    if (!authContext.authenticated) {
       logger.warn('Unauthorized access attempt', {
         pathname,
         ip: getClientIp(req),
-        userAgent: getUserAgent(req)
+        userAgent: getUserAgent(req),
+        error: authContext.error
       });
 
       // Return appropriate response based on route type
       if (pathname.startsWith('/api/')) {
         return NextResponse.json(
-          { error: 'Unauthorized', message: authResult.error },
+          { error: 'Unauthorized', message: authContext.error },
           { status: 401 }
         );
       } else {
@@ -42,11 +66,11 @@ export async function middleware(req: NextRequest) {
     }
 
     // Validate session binding (IP/User-Agent consistency)
-    if (authResult.userId) {
-      const isBindingValid = await validateSessionBinding(req, authResult.userId);
+    if (authContext.userId) {
+      const isBindingValid = await validateSessionBinding(req, authContext.userId);
       if (!isBindingValid) {
         logger.warn('Session binding validation failed', {
-          userId: authResult.userId,
+          userId: authContext.userId,
           ip: getClientIp(req),
           userAgent: getUserAgent(req)
         });
@@ -59,6 +83,12 @@ export async function middleware(req: NextRequest) {
         return response;
       }
     }
+  } else {
+    // For public routes, set authenticated to true but with no user context
+    authContext = {
+      authenticated: true,
+      timestamp: Date.now()
+    };
   }
 
   // Create response and add security headers
@@ -69,15 +99,14 @@ export async function middleware(req: NextRequest) {
   const requestId = `req_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
   response.headers.set('X-Request-ID', requestId);
 
-  // Add user info to headers if authenticated
-  const authResult = await authenticateRequest(req);
-  if (authResult.authenticated && authResult.userId) {
-    response.headers.set('X-User-ID', authResult.userId);
-    if (authResult.tenantId) {
-      response.headers.set('X-Tenant-ID', authResult.tenantId);
+  // Add verified auth context to headers if authenticated
+  if (authContext.authenticated && authContext.userId) {
+    response.headers.set('X-User-ID', authContext.userId);
+    if (authContext.tenantId) {
+      response.headers.set('X-Tenant-ID', authContext.tenantId);
     }
-    if (authResult.role) {
-      response.headers.set('X-User-Role', authResult.role);
+    if (authContext.role) {
+      response.headers.set('X-User-Role', authContext.role);
     }
   }
 
@@ -86,7 +115,7 @@ export async function middleware(req: NextRequest) {
     method: req.method,
     path: pathname,
     requestId,
-    userId: authResult.authenticated ? authResult.userId : undefined,
+    userId: authContext.authenticated ? authContext.userId : undefined,
     ip: getClientIp(req),
     userAgent: getUserAgent(req)
   });

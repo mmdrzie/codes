@@ -1,16 +1,7 @@
 ```
-# Dependencies
-node_modules/
+# Backup files
+*.backup
 
-# Environment
-.env
-.env.local
-.env.*
-
-# Logs and temp files
-*.log
-*.tmp
-
-# Editors
-.vscode/
+# Session files
+sessionIds
 ```

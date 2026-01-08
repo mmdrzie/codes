@@ -396,3 +396,9 @@ export async function revokeAllUserSessions(userId: string): Promise<void> {
   // 2. Revoking each session individually
   // 3. Blacklisting associated tokens
 }
+}
+// ✅ Invalidate all active sessions for a user (more explicit naming)
+export async function invalidateAllSessions(userId: string): Promise<void> {
+  logger.info('Invalidating all sessions for user', { userId });
+  await revokeAllUserSessions(userId);
+}

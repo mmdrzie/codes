@@ -129,6 +129,22 @@ export async function POST(request: NextRequest) {
         { status: 401 }
       );
     }
+    
+    // Additional security: Validate that the signature was created recently
+    // This helps prevent replay attacks even with nonce checking
+    const nonceTimestamp = parseInt(nonce.split('-')[1] || '0');
+    if (nonceTimestamp && Date.now() - nonceTimestamp > 300000) { // 5 minutes
+      logSecurityEvent('expired_nonce_wallet_auth', 'medium', {
+        address: `${address.slice(0, 6)}...${address.slice(-4)}`,
+        ip: getClientIp(request),
+        nonceAge: Date.now() - nonceTimestamp
+      });
+      
+      return NextResponse.json(
+        { error: 'Nonce has expired. Please try again.' },
+        { status: 401 }
+      );
+    }
 
     // جستجو یا ایجاد کاربر
     const userQuery = await db

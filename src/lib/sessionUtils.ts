@@ -280,13 +280,21 @@ export async function validateSessionBinding(
       sessionMemory.set(sessionId, { meta: sessionData, expiresAt });
     }
 
-    // Validate IP and User-Agent consistency (soft check)
+    // Validate IP and User-Agent consistency with enhanced security checks
     const isIpConsistent = !sessionData.ipAddress || 
                           currentIp.startsWith(sessionData.ipAddress.split(':')[0]) || 
                           currentIp === sessionData.ipAddress;
     
     const isUserAgentConsistent = !sessionData.userAgent || 
                                  currentUserAgent.includes(sessionData.userAgent.split(' ')[0]);
+    
+    // Enhanced security: Check for suspicious patterns
+    const isIpSuspicious = sessionData.ipAddress && 
+                          currentIp !== sessionData.ipAddress &&
+                          !currentIp.startsWith(sessionData.ipAddress.split(':')[0]);
+    
+    const isUserAgentSuspicious = sessionData.userAgent && 
+                                 !currentUserAgent.includes(sessionData.userAgent.split(' ')[0]);
 
     if (!isIpConsistent) {
       logger.warn('IP inconsistency detected', { 
@@ -306,6 +314,52 @@ export async function validateSessionBinding(
       });
     }
 
+    // Enhanced security: Detect and log suspicious patterns
+    if (isIpSuspicious) {
+      logger.warn('Suspicious IP change detected', {
+        sessionId,
+        originalIp: sessionData.ipAddress,
+        currentIp,
+        userId: sessionData.userId
+      });
+      
+      // Emit security event for suspicious IP change
+      await siemService.emitGeoIPAnomaly(
+        currentIp,
+        currentUserAgent,
+        sessionData.userId,
+        'session_validation',
+        sessionData.ipAddress,
+        currentIp
+      );
+    }
+    
+    if (isUserAgentSuspicious) {
+      logger.warn('Suspicious User-Agent change detected', {
+        sessionId,
+        originalUserAgent: sessionData.userAgent,
+        currentUserAgent,
+        userId: sessionData.userId
+      });
+      
+      // Emit security event for suspicious User-Agent change
+      await siemService.emitSecurityEvent({
+        event_type: SecurityEventType.DEVICE_MISMATCH,
+        severity: 'high',
+        ip_address: currentIp,
+        user_agent: currentUserAgent,
+        user_id: sessionData.userId,
+        session_id: sessionId,
+        route: 'session_validation',
+        outcome: 'detected',
+        source: 'session',
+        details: {
+          original_user_agent: sessionData.userAgent,
+          current_user_agent: currentUserAgent
+        }
+      });
+    }
+
     // For high security applications, fail on binding inconsistencies
     // For moderate security, allow with warning (current behavior)
     // Returning false will enforce strict binding
@@ -317,6 +371,25 @@ export async function validateSessionBinding(
         isIpConsistent,
         isUserAgentConsistent
       });
+      
+      // Emit security event for binding violation
+      await siemService.emitSecurityEvent({
+        event_type: SecurityEventType.SESSION_HIJACK_ATTEMPT,
+        severity: 'critical',
+        ip_address: currentIp,
+        user_agent: currentUserAgent,
+        user_id: sessionData.userId,
+        session_id: sessionId,
+        route: 'session_validation',
+        outcome: 'blocked',
+        source: 'session',
+        details: {
+          binding_violation: true,
+          ip_consistent: isIpConsistent,
+          ua_consistent: isUserAgentConsistent
+        }
+      });
+      
       return false;
     }
 

@@ -687,8 +687,27 @@ export async function verifyRefreshToken(token: string): Promise<{ valid: boolea
       return { valid: false, payload: null, error: 'Token reuse detected - all tokens revoked for security' };
     }
 
-    // Mark this refresh token as used (for rotation)
-    await markRefreshTokenUsed(decodedPayload.jti || '', REFRESH_TTL_SECONDS);
+    // Mark this refresh token as used (for rotation) - atomic operation to prevent race conditions
+    const markedAsUsed = await markRefreshTokenUsed(decodedPayload.jti || '', REFRESH_TTL_SECONDS);
+    if (!markedAsUsed) {
+      logger.warn('Failed to mark refresh token as used - possible race condition', { jti: decodedPayload.jti, userId: decodedPayload.userId });
+      // This means another request already consumed this token, treat as reuse
+      SecurityMonitor.logEvent(
+        SecurityEvent.REPLAY_ATTACK_DETECTED,
+        { 
+          timestamp: new Date(),
+          userId: decodedPayload.userId,
+          metadata: { 
+            jti: decodedPayload.jti,
+            tokenType: 'refresh',
+            attackType: 'race_condition' 
+          }
+        },
+        'Refresh token race condition detected'
+      );
+      
+      return { valid: false, payload: null, error: 'Token already used - please authenticate again' };
+    }
     
     logger.info('Refresh token verified and marked as used', { jti: decodedPayload.jti, userId: decodedPayload.userId });
     
@@ -744,16 +763,30 @@ export async function isRefreshTokenBlacklisted(token: string): Promise<boolean>
   }
 }
 
-// Mark refresh token as used (for rotation)
-export async function markRefreshTokenUsed(jti: string, expiresIn: number): Promise<void> {
-  if (!jti) return;
+// Mark refresh token as used (for rotation) with atomic operation
+export async function markRefreshTokenUsed(jti: string, expiresIn: number): Promise<boolean> {
+  if (!jti) return false;
   
   try {
     const key = `${REFRESH_TOKEN_USED_PREFIX}${jti}`;
-    await redis.setex(key, expiresIn, '1');
-    logger.debug('Refresh token marked as used', { jti });
+    // Use SET with NX (Not eXists) to atomically set the key only if it doesn't exist
+    // This prevents race conditions where multiple requests could consume the same refresh token
+    const setResult = await redis.set(key, '1', {
+      ex: expiresIn,  // Set expiration time
+      nx: true        // Only set if key doesn't exist
+    });
+    
+    const success = setResult !== null && setResult !== false;
+    if (success) {
+      logger.debug('Refresh token marked as used', { jti });
+    } else {
+      logger.warn('Refresh token already marked as used (potential race condition or reuse)', { jti });
+    }
+    
+    return success;
   } catch (error) {
     logger.error('Failed to mark refresh token as used', { error: (error as Error).message, jti });
+    return false;
   }
 }
 
@@ -780,21 +813,22 @@ export async function revokeUserTokens(userId: string): Promise<void> {
   // For now, we just log the action
 }
 
-// Check for access token replay attacks using Redis
+// Check for access token replay attacks using Redis with atomic operations
 async function checkAccessTokenReplay(jti: string): Promise<boolean> {
   // Use Redis to track used access tokens for replay protection
   const key = `${ACCESS_TOKEN_USED_PREFIX}${jti}`;
   
   try {
-    // Check if token was already used
-    const result = await redis.get(key);
-    if (result !== null) {
-      return true; // Replay attack detected
-    }
+    // Use SET with NX (Not eXists) to atomically set the key only if it doesn't exist
+    // This prevents race conditions where multiple requests could pass the check
+    const setResult = await redis.set(key, '1', {
+      ex: ACCESS_TTL_SECONDS,  // Set expiration time
+      nx: true                 // Only set if key doesn't exist
+    });
     
-    // Mark token as used with TTL equal to access token TTL
-    await redis.setex(key, ACCESS_TTL_SECONDS, '1');
-    return false;
+    // If setResult is true (or 'OK' in some cases), the key was set successfully
+    // If setResult is null, the key already existed (replay attack)
+    return setResult === null || setResult === false;
   } catch (error) {
     logger.error('Redis error in access token replay check', { error: (error as Error).message, jti });
     // Fallback to in-memory tracking if Redis fails

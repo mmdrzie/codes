@@ -1,6 +1,11 @@
 import * as Sentry from '@sentry/nextjs';
+import { 
+  SecurityEventType, 
+  siemService, 
+  SeverityLevel 
+} from './siem-integration';
 
-// Security event types
+// Security event types - now mapped to SIEM types
 export enum SecurityEvent {
   AUTH_SUCCESS = 'auth_success',
   AUTH_FAILURE = 'auth_failure',
@@ -34,7 +39,7 @@ export class SecurityMonitor {
   /**
    * Log a security event
    */
-  static logEvent(eventType: SecurityEvent, context: SecurityContext, message?: string): void {
+  static async logEvent(eventType: SecurityEvent, context: SecurityContext, message?: string): Promise<void> {
     const securityEvent = {
       eventType,
       context: {
@@ -73,17 +78,19 @@ export class SecurityMonitor {
       },
     });
 
-    // In production, also emit to SIEM system
-    if (process.env.NODE_ENV === 'production') {
-      this.emitToSIEM(securityEvent);
+    // Emit to SIEM system with proper mapping
+    try {
+      await this.emitToSIEMSystem(eventType, context, message);
+    } catch (error) {
+      console.error('Failed to emit security event to SIEM:', error);
     }
   }
 
   /**
    * Log an authentication success event
    */
-  static logAuthSuccess(userId: string, context: Omit<SecurityContext, 'timestamp'>): void {
-    this.logEvent(SecurityEvent.AUTH_SUCCESS, {
+  static async logAuthSuccess(userId: string, context: Omit<SecurityContext, 'timestamp'>): Promise<void> {
+    await this.logEvent(SecurityEvent.AUTH_SUCCESS, {
       ...context,
       userId,
       timestamp: new Date(),
@@ -93,8 +100,8 @@ export class SecurityMonitor {
   /**
    * Log an authentication failure event
    */
-  static logAuthFailure(userId: string | null, context: Omit<SecurityContext, 'timestamp'>, reason: string): void {
-    this.logEvent(SecurityEvent.AUTH_FAILURE, {
+  static async logAuthFailure(userId: string | null, context: Omit<SecurityContext, 'timestamp'>, reason: string): Promise<void> {
+    await this.logEvent(SecurityEvent.AUTH_FAILURE, {
       ...context,
       userId: userId || undefined,
       timestamp: new Date(),
@@ -104,8 +111,8 @@ export class SecurityMonitor {
   /**
    * Log SIWE signature anomaly
    */
-  static logSiweAnomaly(context: Omit<SecurityContext, 'timestamp'>, details: string): void {
-    this.logEvent(SecurityEvent.SIWE_SIGNATURE_ANOMALY, {
+  static async logSiweAnomaly(context: Omit<SecurityContext, 'timestamp'>, details: string): Promise<void> {
+    await this.logEvent(SecurityEvent.SIWE_SIGNATURE_ANOMALY, {
       ...context,
       timestamp: new Date(),
     }, `SIWE signature anomaly detected: ${details}`);
@@ -114,8 +121,8 @@ export class SecurityMonitor {
   /**
    * Log nonce reuse attempt
    */
-  static logNonceReuse(context: Omit<SecurityContext, 'timestamp'>, nonce: string): void {
-    this.logEvent(SecurityEvent.NONCE_REUSE_ATTEMPT, {
+  static async logNonceReuse(context: Omit<SecurityContext, 'timestamp'>, nonce: string): Promise<void> {
+    await this.logEvent(SecurityEvent.NONCE_REUSE_ATTEMPT, {
       ...context,
       timestamp: new Date(),
     }, `Nonce reuse attempt detected: ${nonce}`);
@@ -124,8 +131,8 @@ export class SecurityMonitor {
   /**
    * Log CSRF violation
    */
-  static logCsrfViolation(context: Omit<SecurityContext, 'timestamp'>, token?: string): void {
-    this.logEvent(SecurityEvent.CSRF_VIOLATION, {
+  static async logCsrfViolation(context: Omit<SecurityContext, 'timestamp'>, token?: string): Promise<void> {
+    await this.logEvent(SecurityEvent.CSRF_VIOLATION, {
       ...context,
       timestamp: new Date(),
     }, `CSRF violation detected${token ? ` with token: ${token.substring(0, 8)}...` : ''}`);
@@ -134,8 +141,8 @@ export class SecurityMonitor {
   /**
    * Log rate limit breach
    */
-  static logRateLimitBreach(context: Omit<SecurityContext, 'timestamp'>, limit: number, windowMs: number): void {
-    this.logEvent(SecurityEvent.RATE_LIMIT_BREACH, {
+  static async logRateLimitBreach(context: Omit<SecurityContext, 'timestamp'>, limit: number, windowMs: number): Promise<void> {
+    await this.logEvent(SecurityEvent.RATE_LIMIT_BREACH, {
       ...context,
       timestamp: new Date(),
     }, `Rate limit breach: ${limit} requests in ${windowMs}ms`);
@@ -144,8 +151,8 @@ export class SecurityMonitor {
   /**
    * Log suspicious activity
    */
-  static logSuspiciousActivity(context: Omit<SecurityContext, 'timestamp'>, activity: string): void {
-    this.logEvent(SecurityEvent.SUSPICIOUS_ACTIVITY, {
+  static async logSuspiciousActivity(context: Omit<SecurityContext, 'timestamp'>, activity: string): Promise<void> {
+    await this.logEvent(SecurityEvent.SUSPICIOUS_ACTIVITY, {
       ...context,
       timestamp: new Date(),
     }, `Suspicious activity: ${activity}`);
@@ -154,8 +161,8 @@ export class SecurityMonitor {
   /**
    * Log post-quantum cryptography error
    */
-  static logPqCryptoError(context: Omit<SecurityContext, 'timestamp'>, error: string, operation: string): void {
-    this.logEvent(SecurityEvent.PQ_CRYPTO_ERROR, {
+  static async logPqCryptoError(context: Omit<SecurityContext, 'timestamp'>, error: string, operation: string): Promise<void> {
+    await this.logEvent(SecurityEvent.PQ_CRYPTO_ERROR, {
       ...context,
       timestamp: new Date(),
     }, `Post-quantum crypto error during ${operation}: ${error}`);
@@ -164,8 +171,8 @@ export class SecurityMonitor {
   /**
    * Log invalid post-quantum signature
    */
-  static logPqSignatureInvalid(context: Omit<SecurityContext, 'timestamp'>, details: string): void {
-    this.logEvent(SecurityEvent.PQ_SIGNATURE_INVALID, {
+  static async logPqSignatureInvalid(context: Omit<SecurityContext, 'timestamp'>, details: string): Promise<void> {
+    await this.logEvent(SecurityEvent.PQ_SIGNATURE_INVALID, {
       ...context,
       timestamp: new Date(),
     }, `Post-quantum signature validation failed: ${details}`);
@@ -174,8 +181,8 @@ export class SecurityMonitor {
   /**
    * Log suspected post-quantum key compromise
    */
-  static logPqKeyCompromiseSuspected(context: Omit<SecurityContext, 'timestamp'>, keyId: string): void {
-    this.logEvent(SecurityEvent.PQ_KEY_COMPROMISE_SUSPECTED, {
+  static async logPqKeyCompromiseSuspected(context: Omit<SecurityContext, 'timestamp'>, keyId: string): Promise<void> {
+    await this.logEvent(SecurityEvent.PQ_KEY_COMPROMISE_SUSPECTED, {
       ...context,
       timestamp: new Date(),
     }, `Post-quantum key compromise suspected: ${keyId}`);
@@ -184,8 +191,8 @@ export class SecurityMonitor {
   /**
    * Log device binding violation
    */
-  static logDeviceBindingViolation(context: Omit<SecurityContext, 'timestamp'>, expected: string, actual: string): void {
-    this.logEvent(SecurityEvent.DEVICE_BINDING_VIOLATION, {
+  static async logDeviceBindingViolation(context: Omit<SecurityContext, 'timestamp'>, expected: string, actual: string): Promise<void> {
+    await this.logEvent(SecurityEvent.DEVICE_BINDING_VIOLATION, {
       ...context,
       timestamp: new Date(),
     }, `Device binding violation: expected ${expected}, got ${actual}`);
@@ -194,8 +201,8 @@ export class SecurityMonitor {
   /**
    * Log token freshness violation
    */
-  static logTokenFreshnessViolation(context: Omit<SecurityContext, 'timestamp'>, ageSeconds: number): void {
-    this.logEvent(SecurityEvent.TOKEN_FRESHNESS_VIOLATION, {
+  static async logTokenFreshnessViolation(context: Omit<SecurityContext, 'timestamp'>, ageSeconds: number): Promise<void> {
+    await this.logEvent(SecurityEvent.TOKEN_FRESHNESS_VIOLATION, {
       ...context,
       timestamp: new Date(),
     }, `Token freshness violation: token is ${ageSeconds} seconds old`);
@@ -204,25 +211,105 @@ export class SecurityMonitor {
   /**
    * Log geo/IP anomaly
    */
-  static logGeoIpAnomaly(context: Omit<SecurityContext, 'timestamp'>, previousLocation?: string, currentLocation?: string): void {
-    this.logEvent(SecurityEvent.GEO_IP_ANOMALY, {
+  static async logGeoIpAnomaly(context: Omit<SecurityContext, 'timestamp'>, previousLocation?: string, currentLocation?: string): Promise<void> {
+    await this.logEvent(SecurityEvent.GEO_IP_ANOMALY, {
       ...context,
       timestamp: new Date(),
     }, `Geographic/IP anomaly detected: ${previousLocation ? `from ${previousLocation} ` : ''}to ${currentLocation || 'unknown location'}`);
   }
 
   /**
-   * Emit security event to SIEM system (placeholder implementation)
+   * Emit security event to SIEM system with proper mapping
    */
-  private static emitToSIEM(event: any): void {
-    // In a real implementation, this would send to:
-    // - ELK stack (Elasticsearch, Logstash, Kibana)
-    // - Splunk
-    // - Datadog
-    // - Custom SIEM solution
+  private static async emitToSIEMSystem(eventType: SecurityEvent, context: SecurityContext, message?: string): Promise<void> {
+    // Map SecurityEvent to SecurityEventType for SIEM
+    const siemEventType = this.mapToSIEMEventType(eventType);
+    const severity = this.mapToSIEMSeverity(eventType);
     
-    // For now, we'll just log to console
-    console.log('[SIEM INTEGRATION]', JSON.stringify(event, null, 2));
+    // Determine outcome based on event type
+    let outcome: 'success' | 'failure' | 'blocked' | 'detected' = 'detected';
+    if (eventType === SecurityEvent.AUTH_SUCCESS) {
+      outcome = 'success';
+    } else if (eventType === SecurityEvent.AUTH_FAILURE) {
+      outcome = 'failure';
+    } else if (eventType === SecurityEvent.RATE_LIMIT_BREACH) {
+      outcome = 'blocked';
+    }
+    
+    // Determine source based on event type
+    let source: 'auth' | 'session' | 'api' | 'network' | 'application' = 'auth';
+    if (eventType === SecurityEvent.CSRF_VIOLATION || eventType.includes('SIGNATURE') || eventType.includes('CRYPTO')) {
+      source = 'application';
+    } else if (eventType.includes('SESSION') || eventType.includes('BINDING')) {
+      source = 'session';
+    } else if (eventType.includes('RATE_LIMIT')) {
+      source = 'api';
+    } else if (eventType.includes('GEO_IP')) {
+      source = 'network';
+    }
+    
+    // Emit to SIEM service
+    await siemService.emitSecurityEvent({
+      event_type: siemEventType,
+      severity,
+      ip_address: context.ipAddress || 'unknown',
+      user_agent: context.userAgent || 'unknown',
+      user_id: context.userId,
+      session_id: context.sessionId,
+      route: context.metadata?.route || 'unknown',
+      outcome,
+      source,
+      details: {
+        original_event_type: eventType,
+        message,
+        ...context.metadata
+      }
+    });
+  }
+  
+  /**
+   * Map SecurityEvent to SecurityEventType for SIEM
+   */
+  private static mapToSIEMEventType(eventType: SecurityEvent): SecurityEventType {
+    switch (eventType) {
+      case SecurityEvent.AUTH_FAILURE:
+        return SecurityEventType.AUTH_FAILURE;
+      case SecurityEvent.REPLAY_ATTACK_DETECTED:
+        return SecurityEventType.REPLAY_ATTACK;
+      case SecurityEvent.SESSION_HIJACK_ATTEMPT:
+        return SecurityEventType.SESSION_HIJACK_ATTEMPT;
+      case SecurityEvent.RATE_LIMIT_BREACH:
+        return SecurityEventType.RATE_LIMIT_BREACH;
+      case SecurityEvent.UNAUTHORIZED_ACCESS:
+        return SecurityEventType.UNAUTHORIZED_ACCESS;
+      case SecurityEvent.SUSPICIOUS_ACTIVITY:
+        return SecurityEventType.SUSPICIOUS_ACTIVITY;
+      case SecurityEvent.GEO_IP_ANOMALY:
+        return SecurityEventType.GEO_IP_ANOMALY;
+      case SecurityEvent.CSRF_VIOLATION:
+        return SecurityEventType.CSRF_VIOLATION;
+      case SecurityEvent.NONCE_REUSE_ATTEMPT:
+        return SecurityEventType.TOKEN_REUSE;
+      case SecurityEvent.DEVICE_BINDING_VIOLATION:
+        return SecurityEventType.DEVICE_MISMATCH;
+      default:
+        return SecurityEventType.SUSPICIOUS_ACTIVITY;
+    }
+  }
+  
+  /**
+   * Map SecurityEvent to appropriate severity level
+   */
+  private static mapToSIEMSeverity(eventType: SecurityEvent): SeverityLevel {
+    if (eventType.includes('ERROR') || eventType.includes('_FAILURE') || eventType.includes('ATTACK') || eventType.includes('HIJACK')) {
+      return 'critical';
+    } else if (eventType.includes('ANOMALY') || eventType.includes('VIOLATION') || eventType.includes('ATTEMPT')) {
+      return 'high';
+    } else if (eventType.includes('LIMIT') || eventType.includes('MISMATCH')) {
+      return 'medium';
+    } else {
+      return 'low';
+    }
   }
 
   /**

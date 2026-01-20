@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server';
 import { Redis } from '@upstash/redis';
 import { logger } from './logger';
+import { SecurityMonitor } from './security-monitoring';
 
 // تنظیمات Rate Limit برای endpoint های مختلف
 export const RATE_LIMITS = {

@@ -4,6 +4,7 @@ import jwt, { JwtPayload, VerifyOptions } from 'jsonwebtoken';
 import { Redis } from '@upstash/redis';
 import crypto from 'crypto';
 import { logger } from './logger';
+import { SecurityMonitor } from './security-monitoring';
 
 // ✅ Validation برای JWT secret
 const getJwtSecret = (): string => {

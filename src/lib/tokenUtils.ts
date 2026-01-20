@@ -3,6 +3,7 @@ import crypto from 'crypto';
 import { Redis } from '@upstash/redis';
 import { logger } from './logger';
 import { PQCryptoService } from '@/services/crypto/pq-crypto-service';
+import { SecurityMonitor } from './security-monitoring';
 
 /** 
  * App JWTs with Post-Quantum Security

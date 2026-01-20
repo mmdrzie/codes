@@ -74,9 +74,18 @@ class SyslogEmitter implements SIEMEmitter {
       // Format according to RFC 5424
       const syslogMessage = `<${priority}>1 ${timestamp} ${process.env.HOSTNAME || 'app'} ${process.env.APP_NAME || 'quantumiq'} - - [security@12345 event="${event.event_type}" severity="${event.severity}" userId="${event.user_id || 'unknown'}" ip="${event.ip_address}" outcome="${event.outcome}"] Security event: ${event.event_type}`;
       
-      // In a real implementation, we would send this to syslog server
-      // For now, we'll log it but in production this goes to external syslog
-      console.log(`[SYSLOG EMITTED] ${syslogMessage}`);
+      // Send to external syslog server
+      const dgram = require('dgram');
+      const client = dgram.createSocket('udp4');
+      
+      const messageBuffer = Buffer.from(syslogMessage);
+      
+      client.send(messageBuffer, 0, messageBuffer.length, 514, this.syslogServer, (err: Error | null) => {
+        if (err) {
+          logger.error('Failed to send syslog message', { error: err.message, syslogMessage });
+        }
+        client.close();
+      });
       
       // Also log to application logs
       logger.info('Syslog event emitted', { 
@@ -127,7 +136,11 @@ class WebhookEmitter implements SIEMEmitter {
 
       while (attempt < this.retries) {
         try {
-          const response = await fetch(this.webhookUrl, {
+          // Using AbortController for proper timeout handling
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+      
+      const response = await fetch(this.webhookUrl, {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
@@ -136,8 +149,10 @@ class WebhookEmitter implements SIEMEmitter {
               'X-Event-Timestamp': signedEvent.timestamp_sent
             },
             body: JSON.stringify(signedEvent),
-            timeout: 10000 // 10 second timeout
+            signal: controller.signal
           });
+          
+      clearTimeout(timeoutId);
 
           if (response.ok) {
             logger.info('Webhook event sent successfully', { 

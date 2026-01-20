@@ -58,7 +58,7 @@ export class SecurityMonitor {
     let level: 'info' | 'warning' | 'error' = 'info';
     if (eventType.includes('ANOMALY') || eventType.includes('ATTEMPT') || eventType.includes('VIOLATION')) {
       level = 'warning';
-    } else if (eventType.includes('ERROR') || eventType.includes('_FAILURE')) {
+    } else if (eventType.includes('ERROR') || eventType.includes('_FAILURE') || eventType.includes('ATTACK')) {
       level = 'error';
     }
 
@@ -82,7 +82,14 @@ export class SecurityMonitor {
     try {
       await this.emitToSIEMSystem(eventType, context, message);
     } catch (error) {
-      console.error('Failed to emit security event to SIEM:', error);
+      // CRITICAL: If SIEM emission fails, this is a security failure
+      logger.error('FAILED TO EMIT SECURITY EVENT TO SIEM - SECURITY COMPROMISED', {
+        eventType,
+        error: (error as Error).message,
+        context
+      });
+      // In production, you might want to fail closed here
+      // For now, log but continue
     }
   }
 

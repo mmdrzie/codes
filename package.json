@@ -3,14 +3,15 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "node -r dotenv/config server.ts",
     "build": "next build",
-    "start": "next start",
+    "start": "node server.ts",
     "lint": "next lint",
     "type-check": "tsc --noEmit",
     "test": "jest",
     "test:security": "jest --config jest.security.config.js",
-    "security:audit": "npm audit --production"
+    "security:audit": "npm audit --production",
+    "security:check": "ts-node ./security-check.ts"
   },
   "dependencies": {
     "@upstash/redis": "^1.36.0",

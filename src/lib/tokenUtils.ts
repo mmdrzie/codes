@@ -277,6 +277,7 @@ export async function verifyAccessToken(token: string): Promise<AppJwtPayload | 
     }
     
     // Verify the JWT signature first (backup verification)
+    let jwtVerified = false;
     try {
       jwt.verify(jwtPart, process.env.JWT_ACCESS_SECRET || process.env.JWT_SECRET || 'default_secret_for_dev', {
         algorithms: ['HS256'],
@@ -284,6 +285,7 @@ export async function verifyAccessToken(token: string): Promise<AppJwtPayload | 
         audience: AUDIENCE,
         clockTolerance: 30,
       });
+      jwtVerified = true;
     } catch (jwtError) {
       logger.warn('Standard JWT verification failed', { error: (jwtError as Error).message });
       SecurityMonitor.logPqCryptoError(
@@ -294,6 +296,7 @@ export async function verifyAccessToken(token: string): Promise<AppJwtPayload | 
         (jwtError as Error).message,
         'standard_jwt_verification'
       );
+      // For access tokens, we'll consider the token invalid if either classical or PQ verification fails
       return null;
     }
     
@@ -603,6 +606,7 @@ export async function verifyRefreshToken(token: string): Promise<{ valid: boolea
       return { valid: false, payload: null, error: 'Invalid signature' };
     }
     
+    // For security, both classical and post-quantum signatures must be valid
     if (!jwtVerified) {
       logger.warn('Refresh token failed standard JWT verification but passed PQ verification', { 
         jti: decodedPayload.jti,

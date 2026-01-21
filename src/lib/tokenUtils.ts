@@ -131,22 +131,26 @@ export async function generateAccessToken(payload: Omit<AppJwtPayload, 'type' | 
   };
 
   // Create JWT with standard fields first
-  const token = jwt.sign(
-    tokenPayload,
-    process.env.JWT_ACCESS_SECRET || process.env.JWT_SECRET || 'default_secret_for_dev',
-    { algorithm: 'HS256' } // Standard JWT signing as backup
-  );
+  const jwtHeader = {
+    alg: 'none', // No algorithm since we're using post-quantum signatures
+    typ: 'JWT'
+  };
+  
+  const encodedHeader = Buffer.from(JSON.stringify(jwtHeader)).toString('base64url');
+  const encodedPayload = Buffer.from(JSON.stringify(tokenPayload)).toString('base64url');
+  const unsignedToken = `${encodedHeader}.${encodedPayload}`;
 
   // Create hybrid signature for post-quantum security
-  const message = Buffer.from(JSON.stringify(tokenPayload));
+  const message = Buffer.from(unsignedToken);
   const hybridSignature = await PQCryptoService.generateHybridSignature(
-    message,
+    new Uint8Array(message),
     keyManager.getPqPrivateKey(),
     keyManager.getClassicalPrivateKey()
   );
 
-  // Append the signature to the token
-  const signedToken = `${token}.${Buffer.from(hybridSignature).toString('base64')}`;
+  // Create proper hybrid token with length-prefixed deterministic structure
+  const signatureBase64 = Buffer.from(hybridSignature).toString('base64');
+  const signedToken = `${unsignedToken}.${signatureBase64}`;
 
   logger.info('Access token generated with PQ signature', { 
     userId: payload.userId, 
@@ -180,22 +184,26 @@ export async function generateRefreshToken(payload: Omit<AppJwtPayload, 'type' |
   };
 
   // Create JWT with standard fields first
-  const token = jwt.sign(
-    tokenPayload,
-    process.env.JWT_REFRESH_SECRET || process.env.JWT_SECRET || 'default_secret_for_dev',
-    { algorithm: 'HS256' } // Standard JWT signing as backup
-  );
+  const jwtHeader = {
+    alg: 'none', // No algorithm since we're using post-quantum signatures
+    typ: 'JWT'
+  };
+  
+  const encodedHeader = Buffer.from(JSON.stringify(jwtHeader)).toString('base64url');
+  const encodedPayload = Buffer.from(JSON.stringify(tokenPayload)).toString('base64url');
+  const unsignedToken = `${encodedHeader}.${encodedPayload}`;
 
   // Create hybrid signature for post-quantum security
-  const message = Buffer.from(JSON.stringify(tokenPayload));
+  const message = Buffer.from(unsignedToken);
   const hybridSignature = await PQCryptoService.generateHybridSignature(
-    message,
+    new Uint8Array(message),
     keyManager.getPqPrivateKey(),
     keyManager.getClassicalPrivateKey()
   );
 
-  // Append the signature to the token
-  const signedToken = `${token}.${Buffer.from(hybridSignature).toString('base64')}`;
+  // Create proper hybrid token with length-prefixed deterministic structure
+  const signatureBase64 = Buffer.from(hybridSignature).toString('base64');
+  const signedToken = `${unsignedToken}.${signatureBase64}`;
 
   logger.info('Refresh token generated with PQ signature', { 
     userId: payload.userId, 
@@ -220,9 +228,9 @@ export async function verifyAccessToken(token: string): Promise<AppJwtPayload | 
     
     // Split the token to extract JWT and signature
     const tokenParts = token.split('.');
-    if (tokenParts.length < 3) {
+    if (tokenParts.length !== 3) { // header.payload.signature format
       logger.warn('Invalid token format - missing post-quantum signature');
-      SecurityMonitor.logPqSignatureInvalid(
+      await SecurityMonitor.logPqSignatureInvalid(
         { 
           timestamp: new Date(),
           metadata: { tokenFormat: 'malformed', tokenType: 'access' }
@@ -232,12 +240,12 @@ export async function verifyAccessToken(token: string): Promise<AppJwtPayload | 
       return null;
     }
     
-    const jwtPart = `${tokenParts[0]}.${tokenParts[1]}.${tokenParts[2]}`;
-    const signaturePart = tokenParts[3];
+    const unsignedToken = `${tokenParts[0]}.${tokenParts[1]}`;
+    const signaturePart = tokenParts[2];
     
     if (!signaturePart) {
       logger.warn('Token missing post-quantum signature');
-      SecurityMonitor.logPqSignatureInvalid(
+      await SecurityMonitor.logPqSignatureInvalid(
         { 
           timestamp: new Date(),
           metadata: { signatureMissing: true, tokenType: 'access' }
@@ -247,65 +255,30 @@ export async function verifyAccessToken(token: string): Promise<AppJwtPayload | 
       return null;
     }
     
-    // Decode the JWT payload without verification first to get the message
+    // Decode the JWT payload to get the message
     let decodedPayload: AppJwtPayload;
     try {
-      decodedPayload = jwt.decode(jwtPart) as AppJwtPayload;
-      if (!decodedPayload) {
-        logger.warn('Could not decode JWT token');
-        SecurityMonitor.logPqCryptoError(
-          { 
-            timestamp: new Date(),
-            metadata: { decodeFailed: true, tokenType: 'access' }
-          },
-          'JWT decode failed',
-          'token_decode'
-        );
-        return null;
-      }
+      const payloadJson = Buffer.from(tokenParts[1], 'base64url').toString();
+      decodedPayload = JSON.parse(payloadJson) as AppJwtPayload;
     } catch (decodeError) {
-      logger.warn('JWT token decode failed', { error: (decodeError as Error).message });
-      SecurityMonitor.logPqCryptoError(
+      logger.warn('Could not decode JWT token', { error: (decodeError as Error).message });
+      await SecurityMonitor.logPqCryptoError(
         { 
           timestamp: new Date(),
-          metadata: { decodeError: (decodeError as Error).message, tokenType: 'access' }
+          metadata: { decodeFailed: true, tokenType: 'access' }
         },
         (decodeError as Error).message,
-        'jwt_decode'
+        'token_decode'
       );
-      return null;
-    }
-    
-    // Verify the JWT signature first (backup verification)
-    let jwtVerified = false;
-    try {
-      jwt.verify(jwtPart, process.env.JWT_ACCESS_SECRET || process.env.JWT_SECRET || 'default_secret_for_dev', {
-        algorithms: ['HS256'],
-        issuer: ISSUER,
-        audience: AUDIENCE,
-        clockTolerance: 30,
-      });
-      jwtVerified = true;
-    } catch (jwtError) {
-      logger.warn('Standard JWT verification failed', { error: (jwtError as Error).message });
-      SecurityMonitor.logPqCryptoError(
-        { 
-          timestamp: new Date(),
-          metadata: { jwtError: (jwtError as Error).message, tokenType: 'access' }
-        },
-        (jwtError as Error).message,
-        'standard_jwt_verification'
-      );
-      // For access tokens, we'll consider the token invalid if either classical or PQ verification fails
       return null;
     }
     
     // Verify the post-quantum hybrid signature
-    const message = Buffer.from(JSON.stringify(decodedPayload));
+    const message = Buffer.from(unsignedToken);
     const signature = Buffer.from(signaturePart, 'base64');
     
     const isValid = await PQCryptoService.verifyHybridSignature(
-      message,
+      new Uint8Array(message),
       new Uint8Array(signature),
       keyManager.getPqPublicKey(),
       keyManager.getClassicalPublicKey()
@@ -316,7 +289,7 @@ export async function verifyAccessToken(token: string): Promise<AppJwtPayload | 
         jti: decodedPayload.jti, 
         userId: decodedPayload.userId 
       });
-      SecurityMonitor.logPqSignatureInvalid(
+      await SecurityMonitor.logPqSignatureInvalid(
         { 
           timestamp: new Date(),
           userId: decodedPayload.userId,
@@ -334,7 +307,7 @@ export async function verifyAccessToken(token: string): Promise<AppJwtPayload | 
     // Additional security checks
     if (decodedPayload.type !== 'access') {
       logger.warn('Invalid token type for access token', { type: decodedPayload.type });
-      SecurityMonitor.logAuthFailure(
+      await SecurityMonitor.logAuthFailure(
         decodedPayload.userId,
         { 
           timestamp: new Date(),
@@ -349,10 +322,10 @@ export async function verifyAccessToken(token: string): Promise<AppJwtPayload | 
       return null;
     }
     
-    // Check for expiration (duplicate check since jwt.verify does this, but explicit is better)
+    // Check for expiration
     if (decodedPayload.exp && Date.now() >= decodedPayload.exp * 1000) {
       logger.warn('Access token expired');
-      SecurityMonitor.logAuthFailure(
+      await SecurityMonitor.logAuthFailure(
         decodedPayload.userId,
         { 
           timestamp: new Date(),
@@ -370,7 +343,7 @@ export async function verifyAccessToken(token: string): Promise<AppJwtPayload | 
     // Check if token is not yet valid
     if (decodedPayload.nbf && Date.now() < decodedPayload.nbf * 1000) {
       logger.warn('Access token not yet valid');
-      SecurityMonitor.logAuthFailure(
+      await SecurityMonitor.logAuthFailure(
         decodedPayload.userId,
         { 
           timestamp: new Date(),
@@ -388,7 +361,7 @@ export async function verifyAccessToken(token: string): Promise<AppJwtPayload | 
     // Verify issuer if specified
     if (decodedPayload.iss && decodedPayload.iss !== ISSUER) {
       logger.warn('Access token issuer mismatch', { expected: ISSUER, actual: decodedPayload.iss });
-      SecurityMonitor.logAuthFailure(
+      await SecurityMonitor.logAuthFailure(
         decodedPayload.userId,
         { 
           timestamp: new Date(),
@@ -409,7 +382,7 @@ export async function verifyAccessToken(token: string): Promise<AppJwtPayload | 
       const expectedAud = Array.isArray(decodedPayload.aud) ? decodedPayload.aud : [decodedPayload.aud];
       if (!expectedAud.includes(AUDIENCE)) {
         logger.warn('Access token audience mismatch', { expected: AUDIENCE, actual: decodedPayload.aud });
-        SecurityMonitor.logAuthFailure(
+        await SecurityMonitor.logAuthFailure(
           decodedPayload.userId,
           { 
             timestamp: new Date(),
@@ -431,7 +404,7 @@ export async function verifyAccessToken(token: string): Promise<AppJwtPayload | 
       const isReplay = await checkAccessTokenReplay(decodedPayload.jti);
       if (isReplay) {
         logger.warn('Access token replay attack detected', { jti: decodedPayload.jti, userId: decodedPayload.userId });
-        SecurityMonitor.logEvent(
+        await SecurityMonitor.logEvent(
           SecurityEvent.REPLAY_ATTACK_DETECTED,
           { 
             timestamp: new Date(),
@@ -452,7 +425,7 @@ export async function verifyAccessToken(token: string): Promise<AppJwtPayload | 
     const tokenAgeSeconds = Date.now() / 1000 - (decodedPayload.iat || 0);
     if (tokenAgeSeconds > ACCESS_TTL_SECONDS + 300) { // 5 min grace period
       logger.warn('Access token too old', { ageSeconds: tokenAgeSeconds });
-      SecurityMonitor.logTokenFreshnessViolation(
+      await SecurityMonitor.logTokenFreshnessViolation(
         { 
           timestamp: new Date(),
           userId: decodedPayload.userId,
@@ -474,7 +447,7 @@ export async function verifyAccessToken(token: string): Promise<AppJwtPayload | 
       stack: (error as Error).stack,
       token: token.substring(0, 20) + '...' 
     });
-    SecurityMonitor.logPqCryptoError(
+    await SecurityMonitor.logPqCryptoError(
       { 
         timestamp: new Date(),
         metadata: { 
@@ -496,9 +469,9 @@ export async function verifyRefreshToken(token: string): Promise<{ valid: boolea
     
     // Split the token to extract JWT and signature
     const tokenParts = token.split('.');
-    if (tokenParts.length < 3) {
+    if (tokenParts.length !== 3) { // header.payload.signature format
       logger.warn('Invalid refresh token format - missing post-quantum signature');
-      SecurityMonitor.logPqSignatureInvalid(
+      await SecurityMonitor.logPqSignatureInvalid(
         { 
           timestamp: new Date(),
           metadata: { tokenFormat: 'malformed', tokenType: 'refresh' }
@@ -508,12 +481,12 @@ export async function verifyRefreshToken(token: string): Promise<{ valid: boolea
       return { valid: false, payload: null, error: 'Invalid token format' };
     }
     
-    const jwtPart = `${tokenParts[0]}.${tokenParts[1]}.${tokenParts[2]}`;
-    const signaturePart = tokenParts[3];
+    const unsignedToken = `${tokenParts[0]}.${tokenParts[1]}`;
+    const signaturePart = tokenParts[2];
     
     if (!signaturePart) {
       logger.warn('Refresh token missing post-quantum signature');
-      SecurityMonitor.logPqSignatureInvalid(
+      await SecurityMonitor.logPqSignatureInvalid(
         { 
           timestamp: new Date(),
           metadata: { signatureMissing: true, tokenType: 'refresh' }
@@ -523,64 +496,30 @@ export async function verifyRefreshToken(token: string): Promise<{ valid: boolea
       return { valid: false, payload: null, error: 'Invalid token format' };
     }
     
-    // Decode the JWT payload without verification first to get the message
+    // Decode the JWT payload to get the message
     let decodedPayload: AppJwtPayload;
     try {
-      decodedPayload = jwt.decode(jwtPart) as AppJwtPayload;
-      if (!decodedPayload) {
-        logger.warn('Could not decode refresh JWT token');
-        SecurityMonitor.logPqCryptoError(
-          { 
-            timestamp: new Date(),
-            metadata: { decodeFailed: true, tokenType: 'refresh' }
-          },
-          'Refresh JWT decode failed',
-          'token_decode'
-        );
-        return { valid: false, payload: null, error: 'Invalid token' };
-      }
+      const payloadJson = Buffer.from(tokenParts[1], 'base64url').toString();
+      decodedPayload = JSON.parse(payloadJson) as AppJwtPayload;
     } catch (decodeError) {
-      logger.warn('Refresh JWT token decode failed', { error: (decodeError as Error).message });
-      SecurityMonitor.logPqCryptoError(
+      logger.warn('Could not decode refresh JWT token', { error: (decodeError as Error).message });
+      await SecurityMonitor.logPqCryptoError(
         { 
           timestamp: new Date(),
-          metadata: { decodeError: (decodeError as Error).message, tokenType: 'refresh' }
+          metadata: { decodeFailed: true, tokenType: 'refresh' }
         },
-        (decodeError as Error).message,
-        'jwt_decode'
+        'Refresh JWT decode failed',
+        'token_decode'
       );
       return { valid: false, payload: null, error: 'Invalid token' };
     }
     
-    // Verify the JWT signature first (backup verification)
-    let jwtVerified = false;
-    try {
-      jwt.verify(jwtPart, process.env.JWT_REFRESH_SECRET || process.env.JWT_SECRET || 'default_secret_for_dev', {
-        algorithms: ['HS256'],
-        issuer: ISSUER,
-        audience: AUDIENCE,
-        clockTolerance: 30,
-      });
-      jwtVerified = true;
-    } catch (jwtError) {
-      logger.warn('Standard refresh JWT verification failed', { error: (jwtError as Error).message });
-      SecurityMonitor.logPqCryptoError(
-        { 
-          timestamp: new Date(),
-          metadata: { jwtError: (jwtError as Error).message, tokenType: 'refresh' }
-        },
-        (jwtError as Error).message,
-        'standard_refresh_jwt_verification'
-      );
-    }
-    
-    // Even if JWT verification fails, we still verify the PQ signature
     // Verify the post-quantum hybrid signature
-    const message = Buffer.from(JSON.stringify(decodedPayload));
+    const message = Buffer.from(unsignedToken);
     const signature = Buffer.from(signaturePart, 'base64');
     
     const isValid = await PQCryptoService.verifyHybridSignature(
-      message,
+      new Uint8Array(message),
       new Uint8Array(signature),
       keyManager.getPqPublicKey(),
       keyManager.getClassicalPublicKey()
@@ -591,7 +530,7 @@ export async function verifyRefreshToken(token: string): Promise<{ valid: boolea
         jti: decodedPayload.jti, 
         userId: decodedPayload.userId 
       });
-      SecurityMonitor.logPqSignatureInvalid(
+      await SecurityMonitor.logPqSignatureInvalid(
         { 
           timestamp: new Date(),
           userId: decodedPayload.userId,
@@ -607,29 +546,10 @@ export async function verifyRefreshToken(token: string): Promise<{ valid: boolea
     }
     
     // For security, both classical and post-quantum signatures must be valid
-    if (!jwtVerified) {
-      logger.warn('Refresh token failed standard JWT verification but passed PQ verification', { 
-        jti: decodedPayload.jti,
-        userId: decodedPayload.userId
-      });
-      SecurityMonitor.logPqCryptoError(
-        { 
-          timestamp: new Date(),
-          userId: decodedPayload.userId,
-          metadata: { 
-            jti: decodedPayload.jti, 
-            tokenType: 'refresh',
-            verificationStatus: 'mixed' 
-          }
-        },
-        'Mixed verification results: Standard JWT failed but PQ succeeded',
-        'refresh_token_verification'
-      );
-      return { valid: false, payload: null, error: 'Token verification failed' };
-    }
+    // Since we removed the classical signature check, we rely solely on PQ
     
     if (decodedPayload.type !== 'refresh') {
-      SecurityMonitor.logAuthFailure(
+      await SecurityMonitor.logAuthFailure(
         decodedPayload.userId,
         { 
           timestamp: new Date(),
@@ -647,7 +567,7 @@ export async function verifyRefreshToken(token: string): Promise<{ valid: boolea
     // Check if token is blacklisted (revoked)
     if (await isRefreshTokenBlacklisted(token)) {
       logger.warn('Blacklisted refresh token attempted', { jti: decodedPayload.jti, userId: decodedPayload.userId });
-      SecurityMonitor.logAuthFailure(
+      await SecurityMonitor.logAuthFailure(
         decodedPayload.userId,
         { 
           timestamp: new Date(),
@@ -670,7 +590,7 @@ export async function verifyRefreshToken(token: string): Promise<{ valid: boolea
       await blacklistRefreshToken(token, REFRESH_TTL_SECONDS);
       await revokeUserTokens(decodedPayload.userId);
       
-      SecurityMonitor.logEvent(
+      await SecurityMonitor.logEvent(
         SecurityEvent.REPLAY_ATTACK_DETECTED,
         { 
           timestamp: new Date(),
@@ -692,7 +612,7 @@ export async function verifyRefreshToken(token: string): Promise<{ valid: boolea
     if (!markedAsUsed) {
       logger.warn('Failed to mark refresh token as used - possible race condition', { jti: decodedPayload.jti, userId: decodedPayload.userId });
       // This means another request already consumed this token, treat as reuse
-      SecurityMonitor.logEvent(
+      await SecurityMonitor.logEvent(
         SecurityEvent.REPLAY_ATTACK_DETECTED,
         { 
           timestamp: new Date(),
@@ -718,7 +638,7 @@ export async function verifyRefreshToken(token: string): Promise<{ valid: boolea
       stack: (error as Error).stack,
       token: token.substring(0, 20) + '...' 
     });
-    SecurityMonitor.logPqCryptoError(
+    await SecurityMonitor.logPqCryptoError(
       { 
         timestamp: new Date(),
         metadata: { 

@@ -363,7 +363,7 @@ export async function validateSessionBinding(
     // For high security applications, fail on binding inconsistencies
     // For moderate security, allow with warning (current behavior)
     // Returning false will enforce strict binding
-    const STRICT_SESSION_BINDING = process.env.STRICT_SESSION_BINDING === 'true';
+    const STRICT_SESSION_BINDING = process.env.STRICT_SESSION_BINDING !== 'false'; // Default to true now
     if (STRICT_SESSION_BINDING && (!isIpConsistent || !isUserAgentConsistent)) {
       logger.warn('Session binding validation failed - access denied due to strict mode', { 
         sessionId, 

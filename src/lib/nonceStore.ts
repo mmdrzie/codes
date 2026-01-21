@@ -162,11 +162,13 @@ async function verifyAndConsumeNonceWithRedis(address: string, nonce: string): P
     const parsedData = JSON.parse(storedData);
     const now = Date.now();
     
+    // Enhanced validation checks
     const checks = [
       parsedData.nonce === nonce,
       parsedData.address === lowerAddress,
       parsedData.expiresAt > now,
-      now - parsedData.createdAt > 1000,
+      now - parsedData.createdAt > 1000, // At least 1 second must have passed since creation
+      parsedData.createdAt > Date.now() - (1000 * 60 * 60 * 24), // Created less than 24 hours ago
     ];
     
     if (checks.some(check => !check)) {
@@ -197,13 +199,16 @@ function verifyAndConsumeNonceWithMemory(address: string, nonce: string): boolea
     }
     
     // Type assertion برای stored data
-    const storedData = stored as { nonce: string; createdAt: number };
+    const storedData = stored as { nonce: string; createdAt: number; address: string; expiresAt: number };
     const now = Date.now();
     
+    // Enhanced validation checks
     const checks = [
       storedData.nonce === nonce,
-      now - storedData.createdAt < (NONCE_EXPIRY_SECONDS * 1000),
-      now - storedData.createdAt > 1000,
+      storedData.address === lowerAddress,
+      storedData.expiresAt > now,
+      now - storedData.createdAt > 1000, // At least 1 second must have passed since creation
+      storedData.createdAt > Date.now() - (1000 * 60 * 60 * 24), // Created less than 24 hours ago
     ];
     
     if (checks.some(check => !check)) {

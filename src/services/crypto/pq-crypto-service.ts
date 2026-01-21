@@ -21,8 +21,14 @@ async function initializeOQS(): Promise<void> {
       logger.info('OQS module loaded successfully');
     } catch (error) {
       logger.error('OQS module not available - CRITICAL SECURITY FAILURE: Post-quantum cryptography unavailable', { error: (error as Error).message });
+      
       // FAIL HARD - Do not allow fallback to simulated crypto
-      throw new Error('Post-quantum cryptography not available. OQS module failed to load.');
+      if (process.env.NODE_ENV === 'production') {
+        logger.error('CRITICAL: Production environment requires OQS module. Terminating process.');
+        process.exit(1);
+      } else {
+        throw new Error('Post-quantum cryptography not available. OQS module failed to load.');
+      }
     }
   })();
   

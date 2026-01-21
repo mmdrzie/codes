@@ -176,6 +176,67 @@ export class SecurityMonitor {
   }
 
   /**
+   * Log classical cryptography error
+   */
+  static async logClassicalCryptoError(context: Omit<SecurityContext, 'timestamp'>, error: string, operation: string): Promise<void> {
+    await this.logEvent(SecurityEvent.PQ_CRYPTO_ERROR, {
+      ...context,
+      timestamp: new Date(),
+    }, `Classical crypto error during ${operation}: ${error}`);
+  }
+
+  /**
+   * Log quantum threat - critical security event
+   */
+  static async logQuantumThreat(context: Omit<SecurityContext, 'timestamp'>, details: string): Promise<void> {
+    // Quantum threats are critical events that require immediate attention
+    const securityEvent = {
+      eventType: SecurityEvent.PQ_CRYPTO_ERROR,
+      context: {
+        ...context,
+        timestamp: new Date(),
+      },
+      message: `QUANTUM THREAT DETECTED: ${details}`,
+    };
+
+    // Log to console in development
+    if (process.env.NODE_ENV !== 'production') {
+      console.log('[QUANTUM THREAT]', securityEvent);
+    }
+
+    // Send to Sentry for monitoring with critical priority
+    Sentry.captureMessage(`Quantum Threat: ${details}`, {
+      level: 'fatal', // Critical priority
+      contexts: {
+        security: {
+          event_type: SecurityEvent.PQ_CRYPTO_ERROR,
+          user_id: context.userId,
+          ip_address: context.ipAddress,
+          user_agent: context.userAgent,
+          session_id: context.sessionId,
+          timestamp: new Date().toISOString(),
+          metadata: context.metadata,
+        },
+      },
+    });
+
+    // Emit to SIEM system with proper mapping
+    try {
+      await this.emitToSIEMSystem(SecurityEvent.PQ_CRYPTO_ERROR, {
+        ...context,
+        timestamp: new Date(),
+      }, securityEvent.message);
+    } catch (error) {
+      // CRITICAL: If SIEM emission fails, this is a security failure
+      logger.error('FAILED TO EMIT QUANTUM THREAT TO SIEM - SECURITY COMPROMISED', {
+        eventType: SecurityEvent.PQ_CRYPTO_ERROR,
+        error: (error as Error).message,
+        context
+      });
+    }
+  }
+
+  /**
    * Log invalid post-quantum signature
    */
   static async logPqSignatureInvalid(context: Omit<SecurityContext, 'timestamp'>, details: string): Promise<void> {

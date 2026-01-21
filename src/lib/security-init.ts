@@ -139,12 +139,18 @@ export class SecurityInitializer {
 
       logger.info('SIEM connectivity test successful');
     } catch (error) {
-      logger.warn('SIEM connectivity test failed', { 
+      logger.error('SIEM connectivity test failed', { 
         error: (error as Error).message,
         suggestion: 'Verify SIEM configuration before production deployment'
       });
-      // Don't throw error for SIEM connectivity - it's non-critical for app startup
-      // but should be warned about
+      
+      // CRITICAL: In production, SIEM failure should cause startup failure
+      if (process.env.NODE_ENV === 'production') {
+        logger.error('CRITICAL: Production environment requires functional SIEM. Terminating process.');
+        process.exit(1);
+      }
+      
+      throw new Error(`SIEM connectivity test failed: ${(error as Error).message}`);
     }
   }
 

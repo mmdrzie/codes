@@ -319,11 +319,13 @@ export class SIEMIntegrationService {
 
     // If all emitters failed, consider this a critical failure
     if (results.every(result => result.status === 'rejected')) {
-      logger.fatal('All SIEM emitters failed - security event lost', { 
+      logger.error('All SIEM emitters failed - security event lost', { 
         event: securityEvent,
         failures: failures.map(f => (f as PromiseRejectedResult).reason)
       });
-      throw new Error('All SIEM emitters failed');
+      // Don't throw here as it could cause service disruption, but log as critical
+      // In a real system, you might want to implement local logging as backup
+      console.error('CRITICAL: All SIEM emitters failed - security events may be lost!');
     }
   }
 

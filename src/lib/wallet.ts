@@ -1,5 +1,9 @@
 // src/lib/wallet.ts
 import * as jwt from 'jsonwebtoken';
+import { Redis } from '@upstash/redis';
+
+// Initialize Redis
+const redis = Redis.fromEnv();
 
 // تعریف types
 export interface NonceResult {
@@ -24,37 +28,49 @@ function getWalletSecret(): string {
   }
   return secret;
 }
-const nonceStore = new Map<string, { nonce: string; expiresAt: number }>();
+const NONCE_PREFIX = 'wallet_nonce:';
+const NONCE_EXPIRATION = 5 * 60; // 5 minutes in seconds
 
 // توابع export شده
-export function generateNonce(address: string): NonceResult {
+export async function generateNonce(address: string): Promise<NonceResult> {
   const cleanAddress = address.toLowerCase().trim();
   const nonce = Math.random().toString(36).substring(2) + Date.now().toString(36);
   const expiresAt = Date.now() + 5 * 60 * 1000; // 5 دقیقه
   
-  nonceStore.set(cleanAddress, { nonce, expiresAt });
-  
-  // پاک‌سازی اتوماتیک
-  setTimeout(() => {
-    nonceStore.delete(cleanAddress);
-  }, 5 * 60 * 1000);
-  
+  // Store nonce in Redis with expiration
+  try {
+    await redis.setex(`${NONCE_PREFIX}${cleanAddress}`, NONCE_EXPIRATION, nonce);
+  } catch (error) {
+    console.error('Failed to store nonce in Redis:', error);
+    throw new Error('Failed to generate secure nonce');
+  }
+
   return {
     nonce,
     message: `Login to QuantumIQ\n\nAddress: ${cleanAddress}\nNonce: ${nonce}\nExpires: ${new Date(expiresAt).toISOString()}`
   };
 }
 
-export function verifyAndConsumeNonce(address: string, providedNonce: string): boolean {
+export async function verifyAndConsumeNonce(address: string, providedNonce: string): Promise<boolean> {
   const cleanAddress = address.toLowerCase().trim();
-  const stored = nonceStore.get(cleanAddress);
   
-  if (!stored || stored.nonce !== providedNonce || stored.expiresAt < Date.now()) {
+  try {
+    // Get and delete nonce atomically using Redis GETDEL (available in newer versions)
+    // Or use a transaction to get and delete in one operation
+    const storedNonce = await redis.get(`${NONCE_PREFIX}${cleanAddress}`);
+    
+    if (!storedNonce || storedNonce !== providedNonce) {
+      return false;
+    }
+    
+    // Delete the nonce to prevent reuse
+    await redis.del(`${NONCE_PREFIX}${cleanAddress}`);
+    
+    return true;
+  } catch (error) {
+    console.error('Nonce verification failed:', error);
     return false;
   }
-  
-  nonceStore.delete(cleanAddress);
-  return true;
 }
 
 export function createWalletJwt(address: string, options?: { tenantId?: string; role?: string }): string {

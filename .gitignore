@@ -1,25 +1,18 @@
-```gitignore
+```
 # Dependencies
 node_modules/
-.jest/
+package-lock.json
 
 # Build outputs
 dist/
 build/
 .next/
-out/
-
-# Logs
-*.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
+.nuxt/
 
 # Environment variables
 .env
 .env.local
-.env.*
-!.env.example
+*.env
 
 # IDE files
 .vscode/
@@ -27,24 +20,37 @@ yarn-error.log*
 *.swp
 *.swo
 
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+
 # OS generated files
 .DS_Store
 Thumbs.db
 
-# Coverage
+# Coverage reports
 coverage/
-.nyc_output/
-istanbul/
-*.lcov
+htmlcov/
+.coverage
 
-# Temporary files
-*.tmp
-*.temp
-.DS_Store?
-```
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
 
-Wait, let me reconsider. The added files are only TypeScript source files and a markdown file - no build artifacts, dependencies, or temporary files that need to be ignored. This should result in an empty .gitignore.
+# MyPy cache
+.mypy_cache/
 
-```gitignore
+# Pytest cache
+.pytest_cache/
 
+# Docker
+Dockerfile
+docker-compose.yml
+
+# Kubernetes
+k8s-deployment.yaml
 ```

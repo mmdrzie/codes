@@ -8,6 +8,7 @@ import { SecurityMonitor } from './security-monitoring';
 import { siemService } from './siem-integration';
 import { SecurityAudit } from './security-audit';
 import { KeyManager } from './tokenUtils';
+import { initializeEnvironmentValidation } from './env-validation';
 
 export class SecurityInitializer {
   private static initialized = false;
@@ -27,8 +28,9 @@ export class SecurityInitializer {
       // 1. Initialize cryptographic keys
       await this.initializeCryptoKeys();
       
-      // 2. Validate environment configuration
+      // 2. Validate environment configuration (new comprehensive validation)
       await this.validateEnvironment();
+      initializeEnvironmentValidation(); // This performs additional validations
       
       // 3. Test SIEM connectivity
       await this.testSIEMConnectivity();

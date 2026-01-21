@@ -7,6 +7,7 @@ import { Redis } from '@upstash/redis';
 import { logger } from '../logger';
 import { SecurityMonitor } from '../security-monitoring';
 import { DoubleEntryLedger, FinancialTransaction, TransactionType } from './ledger';
+import { SystemControls, SystemStatus } from '../system-controls';
 
 // Redis for transaction state management
 const redis = Redis.fromEnv();
@@ -54,6 +55,64 @@ export class TransactionEngine {
     transaction: FinancialTransaction,
     riskControls?: RiskControls
   ): Promise<TransactionResult> {
+    // Check system status before processing
+    const systemStatus = await SystemControls.getSystemStatus();
+    if (systemStatus.status === SystemStatus.FROZEN || systemStatus.status === SystemStatus.EMERGENCY_FROZEN) {
+      logger.error('Transaction blocked - system is frozen', {
+        transactionId: transaction.id,
+        systemStatus: systemStatus.status
+      });
+      
+      await SecurityMonitor.logEvent(
+        SecurityEvent.SUSPICIOUS_ACTIVITY,
+        {
+          userId: transaction.userId,
+          timestamp: new Date(),
+          metadata: {
+            transactionId: transaction.id,
+            violation: 'system_frozen',
+            systemStatus: systemStatus.status
+          }
+        },
+        `Transaction blocked - system is frozen: ${systemStatus.status}`
+      );
+      
+      return {
+        success: false,
+        transactionId: transaction.id,
+        state: TransactionState.FAILED,
+        error: 'System is currently frozen'
+      };
+    }
+    
+    if (systemStatus.status === SystemStatus.READ_ONLY) {
+      logger.error('Transaction blocked - system is in read-only mode', {
+        transactionId: transaction.id,
+        systemStatus: systemStatus.status
+      });
+      
+      await SecurityMonitor.logEvent(
+        SecurityEvent.SUSPICIOUS_ACTIVITY,
+        {
+          userId: transaction.userId,
+          timestamp: new Date(),
+          metadata: {
+            transactionId: transaction.id,
+            violation: 'system_read_only',
+            systemStatus: systemStatus.status
+          }
+        },
+        `Transaction blocked - system is read-only: ${systemStatus.status}`
+      );
+      
+      return {
+        success: false,
+        transactionId: transaction.id,
+        state: TransactionState.FAILED,
+        error: 'System is currently in read-only mode'
+      };
+    }
+    
     // Apply risk controls
     if (riskControls && !(await this.applyRiskControls(transaction, riskControls))) {
       logger.warn('Transaction blocked by risk controls', {

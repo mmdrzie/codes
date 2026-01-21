@@ -6,6 +6,7 @@
 import { Redis } from '@upstash/redis';
 import { logger } from '../logger';
 import { SecurityMonitor, SecurityEvent } from '../security-monitoring';
+import { SystemControls, SystemStatus } from '../system-controls';
 
 // Redis for ledger storage
 const redis = Redis.fromEnv();
@@ -78,6 +79,81 @@ export class DoubleEntryLedger {
    * Ensures that debits equal credits (sum of amounts = 0)
    */
   static async recordTransaction(transaction: FinancialTransaction): Promise<boolean> {
+    // Check system status before processing
+    const systemStatus = await SystemControls.getSystemStatus();
+    if (systemStatus.status === SystemStatus.FROZEN || systemStatus.status === SystemStatus.EMERGENCY_FROZEN) {
+      logger.error('Transaction blocked - system is frozen', {
+        transactionId: transaction.id,
+        systemStatus: systemStatus.status
+      });
+      
+      await SecurityMonitor.logEvent(
+        SecurityEvent.SUSPICIOUS_ACTIVITY,
+        {
+          userId: transaction.userId,
+          timestamp: new Date(),
+          metadata: {
+            transactionId: transaction.id,
+            violation: 'system_frozen',
+            systemStatus: systemStatus.status
+          }
+        },
+        `Transaction blocked - system is frozen: ${systemStatus.status}`
+      );
+      
+      return false;
+    }
+    
+    if (systemStatus.status === SystemStatus.READ_ONLY) {
+      logger.error('Transaction blocked - system is in read-only mode', {
+        transactionId: transaction.id,
+        systemStatus: systemStatus.status
+      });
+      
+      await SecurityMonitor.logEvent(
+        SecurityEvent.SUSPICIOUS_ACTIVITY,
+        {
+          userId: transaction.userId,
+          timestamp: new Date(),
+          metadata: {
+            transactionId: transaction.id,
+            violation: 'system_read_only',
+            systemStatus: systemStatus.status
+          }
+        },
+        `Transaction blocked - system is read-only: ${systemStatus.status}`
+      );
+      
+      return false;
+    }
+    
+    // Check if any involved accounts are frozen
+    for (const entry of transaction.entries) {
+      const isAccountFrozen = await SystemControls.isAccountFrozen(entry.accountId);
+      if (isAccountFrozen) {
+        logger.error('Transaction blocked - account is frozen', {
+          transactionId: transaction.id,
+          accountId: entry.accountId
+        });
+        
+        await SecurityMonitor.logEvent(
+          SecurityEvent.SUSPICIOUS_ACTIVITY,
+          {
+            userId: transaction.userId,
+            timestamp: new Date(),
+            metadata: {
+              transactionId: transaction.id,
+              violation: 'account_frozen',
+              accountId: entry.accountId
+            }
+          },
+          `Transaction blocked - account ${entry.accountId} is frozen`
+        );
+        
+        return false;
+      }
+    }
+    
     // Validate that debits equal credits
     const totalAmount = transaction.entries.reduce((sum, entry) => sum + entry.amount, 0);
     

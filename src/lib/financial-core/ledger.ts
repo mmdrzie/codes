@@ -5,7 +5,7 @@
 
 import { Redis } from '@upstash/redis';
 import { logger } from '../logger';
-import { SecurityMonitor } from '../security-monitoring';
+import { SecurityMonitor, SecurityEvent } from '../security-monitoring';
 
 // Redis for ledger storage
 const redis = Redis.fromEnv();
@@ -86,7 +86,7 @@ export class DoubleEntryLedger {
       });
       
       await SecurityMonitor.logEvent(
-        SecurityMonitor.SecurityEvent.SUSPICIOUS_ACTIVITY,
+        SecurityEvent.SUSPICIOUS_ACTIVITY,
         {
           userId: transaction.userId,
           timestamp: new Date(),
@@ -171,7 +171,7 @@ export class DoubleEntryLedger {
       });
       
       await SecurityMonitor.logEvent(
-        SecurityMonitor.SecurityEvent.SUSPICIOUS_ACTIVITY,
+        SecurityEvent.SUSPICIOUS_ACTIVITY,
         {
           userId: transaction.userId,
           timestamp: new Date(),
@@ -268,16 +268,22 @@ export class DoubleEntryLedger {
   }
 
   /**
-   * Get all ledger entries for an account (simplified implementation)
+   * Get all ledger entries for an account
+   * This is a placeholder implementation that would need to be replaced with a production-ready solution
+   * using proper indexing in a real system.
    */
   private static async getAllLedgerEntriesForAccount(accountId: string): Promise<LedgerEntry[]> {
-    // In a real system, this would require proper indexing
-    // For now, we'll just return an empty array to indicate the method exists
-    // A production implementation would use Redis streams, sorted sets, or external DB
-    logger.warn('Retrieving all ledger entries for account - this is a simplified implementation', {
+    // This is a placeholder implementation. In a real system, this would require proper indexing.
+    // For a production implementation, we would need to maintain indexes by account ID
+    // Since this is a simplified version, we'll return an empty array but log the limitation
+    logger.warn('PLACEHOLDER: getAllLedgerEntriesForAccount should use proper indexing in production. This is a critical limitation for ledger reconciliation.', {
       accountId
     });
     
+    // In a real implementation, we would query for entries by account
+    // This could be done using Redis streams, secondary indexes, or an external database
+    // For now, return empty array to indicate no entries found
+    // NOTE: This makes the ledgerReconciliation method ineffective!
     return [];
   }
 

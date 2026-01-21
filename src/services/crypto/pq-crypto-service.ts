@@ -20,9 +20,9 @@ async function initializeOQS(): Promise<void> {
       isOqsAvailable = true;
       logger.info('OQS module loaded successfully');
     } catch (error) {
-      logger.warn('OQS module not available, falling back to native crypto with PQ-ready interface', { error: (error as Error).message });
-      // In a production environment, this should fail gracefully or use a polyfill
-      // For now, we'll log a warning but continue with simulation
+      logger.error('OQS module not available - CRITICAL SECURITY FAILURE: Post-quantum cryptography unavailable', { error: (error as Error).message });
+      // FAIL HARD - Do not allow fallback to simulated crypto
+      throw new Error('Post-quantum cryptography not available. OQS module failed to load.');
     }
   })();
   
@@ -88,28 +88,20 @@ export class PQCryptoService {
     classicalPrivateKey: Uint8Array;
   }> {
     try {
-      // Initialize OQS if not already done
+      // Initialize OQS - this will throw if OQS is not available
       await initializeOQS();
       
       let pqPublicKey: Uint8Array, pqPrivateKey: Uint8Array;
       
-      if (isOqsAvailable && oqsModule) {
-        // Use real liboqs for Kyber key generation
-        const kex = new oqsModule.KeyEncapsulation('kyber768');
-        const kp = kex.generateKeyPair();
-        
-        pqPublicKey = new Uint8Array(kp.publicKey);
-        pqPrivateKey = new Uint8Array(kp.secretKey);
-        
-        kex.free(); // Free resources
-      } else {
-        // Fallback to simulated PQ keys (in production, this would connect to native liboqs)
-        pqPublicKey = crypto.randomBytes(1184); // Kyber768 public key size
-        pqPrivateKey = crypto.randomBytes(2400); // Kyber768 private key size
-        
-        // Log that we're using simulated keys
-        logger.warn('Using simulated PQ keys - install @oqs/node for real PQ crypto');
-      }
+      // At this point, OQS must be available, so we don't need an else clause
+      // Use real liboqs for Kyber key generation
+      const kex = new oqsModule.KeyEncapsulation('kyber768');
+      const kp = kex.generateKeyPair();
+      
+      pqPublicKey = new Uint8Array(kp.publicKey);
+      pqPrivateKey = new Uint8Array(kp.secretKey);
+      
+      kex.free(); // Free resources
       
       // Generate X25519 key pair (classical)
       const { publicKey: classicalPublicKey, privateKey: classicalPrivateKey } = crypto.generateKeyPairSync('x25519', {
@@ -136,7 +128,7 @@ export class PQCryptoService {
       
       // Monitor the key generation
       await SecurityMonitor.logEvent(
-        SecurityEvent.AUTH_SUCCESS, // Use the correct enum from security-monitoring.ts
+        SecurityEvent.AUTH_SUCCESS,
         { 
           timestamp: new Date(),
           metadata: { 
@@ -156,7 +148,7 @@ export class PQCryptoService {
         classicalPrivateKey: extractedClassicalPrivateKey
       };
     } catch (error) {
-      logger.error('Failed to generate hybrid key pair', { error: (error as Error).message });
+      logger.error('Failed to generate hybrid key pair - CRITICAL SECURITY FAILURE', { error: (error as Error).message });
       await SecurityMonitor.logPqCryptoError(
         { 
           timestamp: new Date(),
@@ -169,7 +161,7 @@ export class PQCryptoService {
         (error as Error).message,
         'hybrid_key_generation'
       );
-      throw new Error(`Key pair generation failed: ${(error as Error).message}`);
+      throw new Error(`Critical security failure - Key pair generation failed: ${(error as Error).message}`);
     }
   }
 
@@ -182,31 +174,18 @@ export class PQCryptoService {
     classicalPrivateKey: Uint8Array
   ): Promise<Uint8Array> {
     try {
-      // Initialize OQS if not already done
+      // Initialize OQS - this will throw if OQS is not available
       await initializeOQS();
       
       let pqSignature: Uint8Array;
       
-      if (isOqsAvailable && oqsModule) {
-        // Use real liboqs for Dilithium signature generation
-        const sig = new oqsModule.Signature('dilithium3');
-        
-        // Sign the message using the PQ private key
-        pqSignature = new Uint8Array(sig.sign(message, pqPrivateKey));
-        
-        sig.free(); // Free resources
-      } else {
-        // Fallback to simulated PQ signature (in production, this would connect to native liboqs)
-        // Create a hash-based signature simulation
-        const pqSignatureInput = Buffer.concat([
-          message,
-          Buffer.from(pqPrivateKey.slice(0, 32)),
-          Buffer.from('dilithium_simulation')
-        ]);
-        pqSignature = crypto.createHash('sha3-512').update(pqSignatureInput).digest();
-        
-        logger.warn('Using simulated PQ signature - install @oqs/node for real PQ crypto');
-      }
+      // Use real liboqs for Dilithium signature generation
+      const sig = new oqsModule.Signature('dilithium3');
+      
+      // Sign the message using the PQ private key
+      pqSignature = new Uint8Array(sig.sign(message, pqPrivateKey));
+      
+      sig.free(); // Free resources
       
       // Generate classical Ed25519 signature
       const ed25519Key = crypto.createPrivateKey({
@@ -238,7 +217,7 @@ export class PQCryptoService {
       
       return combinedSignature;
     } catch (error) {
-      logger.error('Failed to generate hybrid signature', { error: (error as Error).message });
+      logger.error('Failed to generate hybrid signature - CRITICAL SECURITY FAILURE', { error: (error as Error).message });
       SecurityMonitor.logPqCryptoError(
         { 
           timestamp: new Date(),
@@ -251,7 +230,7 @@ export class PQCryptoService {
         (error as Error).message,
         'hybrid_signature_generation'
       );
-      throw new Error(`Signature generation failed: ${(error as Error).message}`);
+      throw new Error(`Critical security failure - Signature generation failed: ${(error as Error).message}`);
     }
   }
 
@@ -265,7 +244,7 @@ export class PQCryptoService {
     classicalPublicKey: Uint8Array
   ): Promise<boolean> {
     try {
-      // Initialize OQS if not already done
+      // Initialize OQS - this will throw if OQS is not available
       await initializeOQS();
       
       // In a real implementation, we'd verify both PQ and classical signatures
@@ -316,33 +295,18 @@ export class PQCryptoService {
       }
       
       // Verify PQ signature
+      // Use real liboqs for Dilithium signature verification
+      const sig = new oqsModule.Signature('dilithium3');
+      
       let pqValid = false;
-      if (isOqsAvailable && oqsModule) {
-        // Use real liboqs for Dilithium signature verification
-        const sig = new oqsModule.Signature('dilithium3');
-        
-        try {
-          pqValid = sig.verify(message, pqSignature, pqPublicKey);
-        } catch (verifyError) {
-          logger.error('PQ signature verification error', { error: (verifyError as Error).message });
-          pqValid = false;
-        }
-        
-        sig.free(); // Free resources
-      } else {
-        // Fallback to simulated verification (in production, this would connect to native liboqs)
-        // Recreate the expected signature for comparison
-        const expectedPqSignatureInput = Buffer.concat([
-          message,
-          Buffer.from(pqPublicKey.slice(0, 32)),
-          Buffer.from('dilithium_simulation')
-        ]);
-        const expectedPqSignature = crypto.createHash('sha3-512').update(expectedPqSignatureInput).digest();
-        
-        pqValid = crypto.timingSafeEqual(pqSignature, expectedPqSignature);
-        
-        logger.warn('Using simulated PQ signature verification - install @oqs/node for real PQ crypto');
+      try {
+        pqValid = sig.verify(message, pqSignature, pqPublicKey);
+      } catch (verifyError) {
+        logger.error('PQ signature verification error', { error: (verifyError as Error).message });
+        pqValid = false;
       }
+      
+      sig.free(); // Free resources
       
       const isValid = classicalValid && pqValid;
       
@@ -380,7 +344,7 @@ export class PQCryptoService {
       
       return isValid;
     } catch (error) {
-      logger.error('Failed to verify hybrid signature', { error: (error as Error).message });
+      logger.error('Failed to verify hybrid signature - CRITICAL SECURITY FAILURE', { error: (error as Error).message });
       SecurityMonitor.logPqSignatureInvalid(
         { 
           timestamp: new Date(),
@@ -392,7 +356,7 @@ export class PQCryptoService {
         },
         'Signature verification error'
       );
-      return false;
+      throw new Error(`Critical security failure - Signature verification failed: ${(error as Error).message}`);
     }
   }
 
@@ -406,29 +370,22 @@ export class PQCryptoService {
     senderClassicalPrivateKey: Uint8Array
   ): Promise<Uint8Array> {
     try {
-      // Initialize OQS if not already done
+      // Initialize OQS - this will throw if OQS is not available
       await initializeOQS();
       
       let pqSharedSecret: Uint8Array;
       
-      if (isOqsAvailable && oqsModule) {
-        // Use real liboqs for Kyber key encapsulation
-        const kex = new oqsModule.KeyEncapsulation('kyber768');
-        
-        // Encapsulate to get ciphertext and shared secret
-        const { ciphertext, shared_secret: pqSharedSecretTemp } = kex.encapSecret(recipientPqPublicKey);
-        
-        // For the actual exchange, we need to decapsulate on the recipient side
-        // But for this implementation, we'll simulate the shared secret
-        pqSharedSecret = pqSharedSecretTemp;
-        
-        kex.free(); // Free resources
-      } else {
-        // Fallback to simulated PQ shared secret (in production, this would connect to native liboqs)
-        pqSharedSecret = crypto.randomBytes(32); // Simulated shared secret
-        
-        logger.warn('Using simulated PQ key exchange - install @oqs/node for real PQ crypto');
-      }
+      // Use real liboqs for Kyber key encapsulation
+      const kex = new oqsModule.KeyEncapsulation('kyber768');
+      
+      // Encapsulate to get ciphertext and shared secret
+      const { ciphertext, shared_secret: pqSharedSecretTemp } = kex.encapSecret(recipientPqPublicKey);
+      
+      // For the actual exchange, we need to decapsulate on the recipient side
+      // But for this implementation, we'll simulate the shared secret
+      pqSharedSecret = pqSharedSecretTemp;
+      
+      kex.free(); // Free resources
       
       // Perform X25519 key exchange
       const classicalPrivateKey = crypto.createPrivateKey({
@@ -470,8 +427,8 @@ export class PQCryptoService {
       
       return combinedSecret;
     } catch (error) {
-      logger.error('Failed to perform hybrid key exchange', { error: (error as Error).message });
-      throw new Error(`Key exchange failed: ${(error as Error).message}`);
+      logger.error('Failed to perform hybrid key exchange - CRITICAL SECURITY FAILURE', { error: (error as Error).message });
+      throw new Error(`Critical security failure - Key exchange failed: ${(error as Error).message}`);
     }
   }
 

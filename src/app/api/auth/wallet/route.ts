@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { ethers } from 'ethers';
 import { walletAuthSchema } from '@/lib/validation';
-import { verifyAndConsumeNonce } from '@/lib/nonceStore';
+import { verifyAndConsumeNonce } from '@/lib/wallet';
 import { validateWalletAddress } from '@/lib/security';
 import { generateTokenPair } from '@/lib/tokenUtils';
 import { createSession } from '@/lib/sessionUtils';
@@ -39,7 +39,7 @@ export async function POST(request: NextRequest) {
     // بررسی Rate Limit
     const identifier = getIdentifier(request);
     const db = getAdminDb();
-    const rateLimitResult = checkRateLimit(identifier, 'walletAuth');
+    const rateLimitResult = await checkRateLimit(identifier, 'walletAuth');
 
     if (!rateLimitResult.allowed) {
       logSecurityEvent('rate_limit_exceeded', 'medium', {

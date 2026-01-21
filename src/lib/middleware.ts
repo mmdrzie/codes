@@ -139,7 +139,7 @@ export async function applyRateLimiting(request: NextRequest, userId?: string) {
     rateLimitType = 'passwordReset';
   }
 
-  const rateLimitResult = checkRateLimit(identifier, rateLimitType);
+  const rateLimitResult = await checkRateLimit(identifier, rateLimitType);
 
   if (!rateLimitResult.allowed) {
     return NextResponse.json(

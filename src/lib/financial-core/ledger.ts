@@ -13,6 +13,9 @@ const LEDGER_ENTRY_PREFIX = 'ledger_entry:';
 const LEDGER_BALANCE_PREFIX = 'ledger_balance:';
 const LEDGER_ACCOUNTS_SET = 'ledger_accounts';
 const LEDGER_TRANSACTIONS_SET = 'ledger_transactions';
+const LEDGER_ENTRIES_BY_ACCOUNT = 'ledger_entries_by_account:'; // Sorted set for indexing entries by account
+const LEDGER_GLOBAL_DEBITS = 'ledger_global_debits';
+const LEDGER_GLOBAL_CREDITS = 'ledger_global_credits';
 
 // Financial transaction types
 export enum TransactionType {
@@ -224,6 +227,17 @@ export class DoubleEntryLedger {
     
     // Set updated balance
     multi.set(balanceKey, JSON.stringify(currentBalance));
+    
+    // Add entry to the account's sorted set index (timestamp as score)
+    const accountIndexKey = `${LEDGER_ENTRIES_BY_ACCOUNT}${entry.accountId}`;
+    multi.zadd(accountIndexKey, { member: entry.id, score: entry.timestamp });
+    
+    // Update global debits/credits totals
+    if (entry.type === 'debit') {
+      multi.incrbyfloat(LEDGER_GLOBAL_DEBITS, entry.amount);
+    } else {
+      multi.incrbyfloat(LEDGER_GLOBAL_CREDITS, entry.amount);
+    }
   }
 
   /**
@@ -248,43 +262,77 @@ export class DoubleEntryLedger {
     startDate?: number,
     endDate?: number
   ): Promise<LedgerEntry[]> {
-    // This is a simplified implementation
-    // In a real system, you'd want to use a more efficient indexing strategy
-    // For now, we'll retrieve all entries for the account
-    
-    // In a production system, we would implement proper indexing and pagination
-    const allEntries = await this.getAllLedgerEntriesForAccount(accountId);
-    
-    // Filter by date if specified
-    if (startDate || endDate) {
-      return allEntries.filter(entry => {
-        if (startDate && entry.timestamp < startDate) return false;
-        if (endDate && entry.timestamp > endDate) return false;
-        return true;
-      });
-    }
-    
-    return allEntries;
+    // Retrieve all entries for the account using the indexed method
+    return await this.getAllLedgerEntriesForAccount(accountId, startDate, endDate);
   }
 
   /**
-   * Get all ledger entries for an account
-   * This is a placeholder implementation that would need to be replaced with a production-ready solution
-   * using proper indexing in a real system.
+   * Get all ledger entries for an account with proper indexing
    */
-  private static async getAllLedgerEntriesForAccount(accountId: string): Promise<LedgerEntry[]> {
-    // This is a placeholder implementation. In a real system, this would require proper indexing.
-    // For a production implementation, we would need to maintain indexes by account ID
-    // Since this is a simplified version, we'll return an empty array but log the limitation
-    logger.warn('PLACEHOLDER: getAllLedgerEntriesForAccount should use proper indexing in production. This is a critical limitation for ledger reconciliation.', {
-      accountId
-    });
-    
-    // In a real implementation, we would query for entries by account
-    // This could be done using Redis streams, secondary indexes, or an external database
-    // For now, return empty array to indicate no entries found
-    // NOTE: This makes the ledgerReconciliation method ineffective!
-    return [];
+  static async getAllLedgerEntriesForAccount(
+    accountId: string,
+    startDate?: number,
+    endDate?: number
+  ): Promise<LedgerEntry[]> {
+    try {
+      // Get all entry IDs for the account from the sorted set
+      const accountIndexKey = `${LEDGER_ENTRIES_BY_ACCOUNT}${accountId}`;
+      
+      let entryIds: string[];
+      if (startDate || endDate) {
+        // Filter by date range if specified
+        const startScore = startDate ? startDate : 0;
+        const endScore = endDate ? endDate : '+inf';
+        
+        const rawEntries = await redis.zrangebyscore(accountIndexKey, startScore, endScore);
+        entryIds = rawEntries.map(entry => entry as string);
+      } else {
+        // Get all entries for the account
+        const rawEntries = await redis.zrange(accountIndexKey, 0, -1);
+        entryIds = rawEntries.map(entry => entry as string);
+      }
+      
+      // Fetch the actual ledger entries by their IDs
+      const entries: LedgerEntry[] = [];
+      for (const entryId of entryIds) {
+        const entryKey = `${LEDGER_ENTRY_PREFIX}${entryId}`;
+        const entryStr = await redis.get(entryKey);
+        
+        if (entryStr) {
+          const entry = JSON.parse(entryStr as string);
+          entries.push(entry);
+        }
+      }
+      
+      // Sort by timestamp to ensure consistent ordering
+      entries.sort((a, b) => a.timestamp - b.timestamp);
+      
+      return entries;
+    } catch (error) {
+      logger.error('Error retrieving ledger entries for account', {
+        error: (error as Error).message,
+        accountId,
+        startDate,
+        endDate
+      });
+      
+      await SecurityMonitor.logEvent(
+        SecurityEvent.SUSPICIOUS_ACTIVITY,
+        {
+          userId: 'system',
+          timestamp: new Date(),
+          metadata: {
+            accountId,
+            startDate,
+            endDate,
+            error: (error as Error).message
+          }
+        },
+        `Failed to retrieve ledger entries for account ${accountId}`
+      );
+      
+      throw error;
+    }
   }
 
   /**
@@ -306,21 +354,26 @@ export class DoubleEntryLedger {
   }
 
   /**
-   * Verify that all balances are mathematically correct
+   * Verify that all balances are mathematically correct and enforce hard invariants
    */
   static async performLedgerReconciliation(): Promise<{
     success: boolean;
-    discrepancies: Array<{ accountId: string; calculatedBalance: number; storedBalance: number }>;
+    discrepancies: Array<{ accountId: string; calculatedBalance: number; storedBalance: number; issue: string }>;
+    globalIssues: Array<{ type: string; details: any }>;
     message: string;
   }> {
     try {
-      // Get all accounts
+      logger.info('Starting comprehensive ledger reconciliation');
+      
+      // Initialize results
+      const discrepancies: Array<{ accountId: string; calculatedBalance: number; storedBalance: number; issue: string }> = [];
+      const globalIssues: Array<{ type: string; details: any }> = [];
+
+      // 1. PER-ACCOUNT RECONCILIATION
       const accounts = await redis.smembers(LEDGER_ACCOUNTS_SET);
       
-      const discrepancies: Array<{ accountId: string; calculatedBalance: number; storedBalance: number }> = [];
-      
       for (const accountId of accounts) {
-        // Calculate balance from ledger entries (simplified)
+        // Calculate balance from ledger entries
         const accountEntries = await this.getAllLedgerEntriesForAccount(accountId);
         
         // Calculate expected balance from entries
@@ -340,35 +393,195 @@ export class DoubleEntryLedger {
         // Get stored balance
         const storedBalance = await this.getAccountBalance(accountId);
         
-        if (storedBalance && Math.abs(calculatedBalance - storedBalance.currentBalance) > 0.01) {
-          discrepancies.push({
-            accountId,
-            calculatedBalance,
-            storedBalance: storedBalance.currentBalance
-          });
+        if (storedBalance) {
+          // Check if calculated vs stored balance matches
+          if (Math.abs(calculatedBalance - storedBalance.currentBalance) > 0.01) {
+            discrepancies.push({
+              accountId,
+              calculatedBalance,
+              storedBalance: storedBalance.currentBalance,
+              issue: 'balance_mismatch'
+            });
+          }
+          
+          // Check if stored balance components match calculated components
+          if (Math.abs(calculatedDebits - storedBalance.totalDebits) > 0.01) {
+            discrepancies.push({
+              accountId,
+              calculatedBalance,
+              storedBalance: storedBalance.currentBalance,
+              issue: 'total_debits_mismatch'
+            });
+          }
+          
+          if (Math.abs(calculatedCredits - storedBalance.totalCredits) > 0.01) {
+            discrepancies.push({
+              accountId,
+              calculatedBalance,
+              storedBalance: storedBalance.currentBalance,
+              issue: 'total_credits_mismatch'
+            });
+          }
+          
+          // Check negative balance invariant (unless explicitly allowed)
+          if (calculatedBalance < 0) {
+            // Log this as a potential issue but don't fail immediately - depends on business rules
+            logger.warn('Account has negative balance', {
+              accountId,
+              calculatedBalance,
+              details: 'This may be intentional depending on account type (e.g., credit accounts)'
+            });
+          }
+        }
+      }
+
+      // 2. GLOBAL SYSTEM INVARIANT CHECKS
+      // Check global debits vs credits (should be approximately equal in a closed system)
+      const globalDebits = await redis.get(LEDGER_GLOBAL_DEBITS);
+      const globalCredits = await redis.get(LEDGER_GLOBAL_CREDITS);
+      
+      const totalGlobalDebits = globalDebits ? parseFloat(globalDebits as string) : 0;
+      const totalGlobalCredits = globalCredits ? parseFloat(globalCredits as string) : 0;
+      
+      // In a properly balanced double-entry system, global debits should equal global credits
+      // However, small discrepancies may occur due to floating point precision
+      if (Math.abs(totalGlobalDebits - totalGlobalCredits) > 0.01) {
+        globalIssues.push({
+          type: 'global_double_entry_violation',
+          details: {
+            totalGlobalDebits,
+            totalGlobalCredits,
+            difference: totalGlobalDebits - totalGlobalCredits
+          }
+        });
+      }
+      
+      // 3. TOTAL SYSTEM BALANCE CONSISTENCY
+      let totalSystemBalance = 0;
+      for (const accountId of accounts) {
+        const balance = await this.getAccountBalance(accountId);
+        if (balance) {
+          totalSystemBalance += balance.currentBalance;
         }
       }
       
-      if (discrepancies.length === 0) {
-        logger.info('Ledger reconciliation completed successfully - no discrepancies found');
-        return {
-          success: true,
-          discrepancies: [],
-          message: 'Ledger reconciliation completed successfully - no discrepancies found'
-        };
-      } else {
-        logger.error('Ledger reconciliation found discrepancies', { discrepancies });
+      // The total system balance should be close to zero in a closed system
+      // (assets = liabilities + equity, so net should be zero)
+      if (Math.abs(totalSystemBalance) > 0.01) {
+        globalIssues.push({
+          type: 'system_balance_non_zero',
+          details: {
+            totalSystemBalance,
+            accountCount: accounts.length
+          }
+        });
+      }
+      
+      // 4. IDEMPOTENCY CHECK - verify no duplicate transaction IDs
+      // We'll check a sample of ledger entries to detect potential duplicates
+      const allLedgerKeys = await redis.keys(`${LEDGER_ENTRY_PREFIX}*`);
+      const transactionCounts: Record<string, number> = {};
+      
+      for (const entryKey of allLedgerKeys) {
+        const entryStr = await redis.get(entryKey);
+        if (entryStr) {
+          const entry = JSON.parse(entryStr as string);
+          transactionCounts[entry.transactionId] = (transactionCounts[entry.transactionId] || 0) + 1;
+        }
+      }
+      
+      for (const [txId, count] of Object.entries(transactionCounts)) {
+        if (count > 1) {
+          globalIssues.push({
+            type: 'duplicate_transaction',
+            details: {
+              transactionId: txId,
+              occurrenceCount: count
+            }
+          });
+        }
+      }
+
+      // 5. LOG RESULTS AND EMIT CRITICAL EVENTS IF NEEDED
+      if (discrepancies.length > 0 || globalIssues.length > 0) {
+        logger.error('Ledger reconciliation found issues', { 
+          discrepancies, 
+          globalIssues,
+          discrepancyCount: discrepancies.length,
+          globalIssueCount: globalIssues.length
+        });
+        
+        // EMIT CRITICAL SIEM EVENT
+        await SecurityMonitor.logEvent(
+          SecurityEvent.CRITICAL,
+          {
+            userId: 'system',
+            timestamp: new Date(),
+            metadata: {
+              event: 'ledger_reconciliation_issues',
+              discrepancies,
+              globalIssues,
+              discrepancyCount: discrepancies.length,
+              globalIssueCount: globalIssues.length
+            }
+          },
+          'CRITICAL: Ledger reconciliation detected mathematical inconsistencies'
+        );
+        
         return {
           success: false,
           discrepancies,
-          message: `Ledger reconciliation found ${discrepancies.length} discrepancies`
+          globalIssues,
+          message: `Ledger reconciliation failed: ${discrepancies.length} account discrepancies, ${globalIssues.length} global issues`
+        };
+      } else {
+        logger.info('Ledger reconciliation completed successfully - all invariants verified');
+        
+        // EMIT SUCCESS EVENT
+        await SecurityMonitor.logEvent(
+          SecurityEvent.INFO,
+          {
+            userId: 'system',
+            timestamp: new Date(),
+            metadata: {
+              event: 'ledger_reconciliation_success',
+              accountCount: accounts.length,
+              globalDebits: totalGlobalDebits,
+              globalCredits: totalGlobalCredits
+            }
+          },
+          'Ledger reconciliation completed successfully'
+        );
+        
+        return {
+          success: true,
+          discrepancies: [],
+          globalIssues: [],
+          message: 'Ledger reconciliation completed successfully - all invariants verified'
         };
       }
     } catch (error) {
       logger.error('Ledger reconciliation failed', { error: (error as Error).message });
+      
+      // EMIT CRITICAL SIEM EVENT
+      await SecurityMonitor.logEvent(
+        SecurityEvent.CRITICAL,
+        {
+          userId: 'system',
+          timestamp: new Date(),
+          metadata: {
+            event: 'ledger_reconciliation_error',
+            error: (error as Error).message,
+            stack: (error as Error).stack
+          }
+        },
+        `CRITICAL: Ledger reconciliation failed with error: ${(error as Error).message}`
+      );
+      
       return {
         success: false,
         discrepancies: [],
+        globalIssues: [],
         message: `Ledger reconciliation failed: ${(error as Error).message}`
       };
     }

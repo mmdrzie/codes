@@ -197,10 +197,24 @@ export class TransactionEngine {
         processedAt: Date.now()
       };
     } finally {
-      // Release the lock
-      // Note: In production, you'd want to ensure the lock is only released by the locker
-      // This requires a Lua script to atomically check and delete
-      await redis.del(lockKey);
+      // Release the lock safely - only if we still own it
+      // Use Lua script to atomically check and delete the lock
+      const luaScript = `
+        if redis.call("GET", KEYS[1]) == ARGV[1] then
+          return redis.call("DEL", KEYS[1])
+        else
+          return 0
+        end
+      `;
+      
+      try {
+        await redis.eval(luaScript, [lockKey], [lockValue]);
+      } catch (lockError) {
+        logger.error('Failed to safely release transaction lock', {
+          transactionId: transaction.id,
+          error: (lockError as Error).message
+        });
+      }
     }
   }
 
@@ -506,8 +520,18 @@ export class TransactionEngine {
         if (typeof entry.amount !== 'number') {
           errors.push(`Entry ${i}: Amount must be a number`);
         }
+        if (typeof entry.amount === 'number' && isNaN(entry.amount)) {
+          errors.push(`Entry ${i}: Amount must be a valid number`);
+        }
+        if (typeof entry.amount === 'number' && entry.amount === 0) {
+          errors.push(`Entry ${i}: Amount must not be zero`);
+        }
         if (!entry.description) {
           errors.push(`Entry ${i}: Description is required`);
+        }
+        // Validate account ID format (basic validation)
+        if (entry.accountId && typeof entry.accountId === 'string' && !/^[a-zA-Z0-9_-]+$/.test(entry.accountId)) {
+          errors.push(`Entry ${i}: Invalid account ID format`);
         }
       }
     }
@@ -515,6 +539,17 @@ export class TransactionEngine {
     // Validate timestamp
     if (!transaction.timestamp || transaction.timestamp > Date.now() + 60000) { // Allow 1 min future
       errors.push('Invalid timestamp');
+    }
+
+    // Validate transaction amount is positive
+    if (typeof transaction.amount === 'number' && transaction.amount <= 0) {
+      errors.push('Transaction amount must be positive');
+    }
+
+    // Validate transaction type is valid
+    const validTypes = Object.values(TransactionType);
+    if (transaction.type && !validTypes.includes(transaction.type)) {
+      errors.push(`Invalid transaction type: ${transaction.type}`);
     }
 
     return {

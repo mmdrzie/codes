@@ -46,9 +46,10 @@ export async function POST(request: NextRequest) {
   
   // Try to acquire lock using Redis
   let acquiredLock = false;
+  const lockValue = `lock_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
   try {
     // Use SET command with NX (not exists) and EX (expire) options for atomic lock acquisition
-    const lockResult = await redis.set(lockKey, 'locked', {
+    const lockResult = await redis.set(lockKey, lockValue, {
       nx: true,  // Only set if key doesn't exist
       ex: REFRESH_LOCK_TTL  // Expire after TTL seconds
     });

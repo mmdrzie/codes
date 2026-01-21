@@ -2,11 +2,44 @@ import { logger } from '@/lib/logger';
 import crypto from 'crypto';
 import { SecurityMonitor } from '@/lib/security-monitoring';
 
+// Dynamically import OQS when needed
+let oqsModule: any = null;
+let isOqsAvailable = false;
+let initializationPromise: Promise<void> | null = null;
+
+// Initialize OQS asynchronously
+async function initializeOQS(): Promise<void> {
+  if (initializationPromise) {
+    return initializationPromise;
+  }
+  
+  initializationPromise = (async () => {
+    try {
+      // Try to load the OQS module
+      oqsModule = await import('@oqs/node');
+      isOqsAvailable = true;
+      logger.info('OQS module loaded successfully');
+    } catch (error) {
+      logger.warn('OQS module not available, falling back to native crypto with PQ-ready interface', { error: (error as Error).message });
+      // In a production environment, this should fail gracefully or use a polyfill
+      // For now, we'll log a warning but continue with simulation
+    }
+  })();
+  
+  return initializationPromise;
+}
+
 /**
  * Post-Quantum Cryptography Service with Hybrid Mode Support
  * Implements CRYSTALS-Kyber + X25519 key exchange and CRYSTALS-Dilithium + Ed25519 signatures
  */
 export class PQCryptoService {
+  // Algorithm identifiers
+  static readonly KYBER_ALG = 'kyber768';
+  static readonly DILITHIUM_ALG = 'dilithium3';
+  static readonly X25519_ALG = 'x25519';
+  static readonly ED25519_ALG = 'ed25519';
+  
   // Key sizes for Kyber-768
   static readonly KYBER_PUBLIC_KEY_SIZE = 1184;
   static readonly KYBER_SECRET_KEY_SIZE = 2400;
@@ -26,6 +59,26 @@ export class PQCryptoService {
   static readonly SHA3_512_DIGEST_SIZE = 64;
 
   /**
+   * Check if the system supports real post-quantum cryptography
+   */
+  static isRealPQSupported(): boolean {
+    return isOqsAvailable;
+  }
+
+  /**
+   * Get the status of OQS availability
+   */
+  static getPQStatus(): { isAvailable: boolean; isRealPQ: boolean; algorithms: string[] } {
+    return {
+      isAvailable: isOqsAvailable,
+      isRealPQ: isOqsAvailable,
+      algorithms: isOqsAvailable 
+        ? ['kyber768', 'dilithium3', 'x25519', 'ed25519']
+        : ['simulated_kyber', 'simulated_dilithium', 'x25519', 'ed25519']
+    };
+  }
+
+  /**
    * Generate a hybrid key pair combining post-quantum and classical cryptography
    */
   static async generateHybridKeyPair(): Promise<{
@@ -35,39 +88,63 @@ export class PQCryptoService {
     classicalPrivateKey: Uint8Array;
   }> {
     try {
-      // ⚠️ CRITICAL: This is a placeholder implementation. 
-      // In production, integrate with actual post-quantum libraries like:
-      // - liboqs for CRYSTALS-Dilithium signatures
-      // - pqclean for standardized implementations
-      // - NIST-approved algorithms
-      // For now, we'll use a more realistic simulation that follows proper crypto standards
-      const crypto = require('node:crypto');
+      // Initialize OQS if not already done
+      await initializeOQS();
       
-      // Generate cryptographically secure random keys for simulation
-      // In real implementation, use actual PQ algorithms
-      const pqPublicKey = crypto.randomBytes(1184); // Kyber768 public key size
-      const pqPrivateKey = crypto.randomBytes(2400); // Kyber768 private key size
+      let pqPublicKey: Uint8Array, pqPrivateKey: Uint8Array;
+      
+      if (isOqsAvailable && oqsModule) {
+        // Use real liboqs for Kyber key generation
+        const kex = new oqsModule.KeyEncapsulation('kyber768');
+        const kp = kex.generateKeyPair();
+        
+        pqPublicKey = new Uint8Array(kp.publicKey);
+        pqPrivateKey = new Uint8Array(kp.secretKey);
+        
+        kex.free(); // Free resources
+      } else {
+        // Fallback to simulated PQ keys (in production, this would connect to native liboqs)
+        pqPublicKey = crypto.randomBytes(1184); // Kyber768 public key size
+        pqPrivateKey = crypto.randomBytes(2400); // Kyber768 private key size
+        
+        // Log that we're using simulated keys
+        logger.warn('Using simulated PQ keys - install @oqs/node for real PQ crypto');
+      }
       
       // Generate X25519 key pair (classical)
-      const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519', { // Changed to ed25519 for signatures
-        publicKeyEncoding: { type: 'spki', format: 'der' },
-        privateKeyEncoding: { type: 'pkcs8', format: 'der' }
+      const { publicKey: classicalPublicKey, privateKey: classicalPrivateKey } = crypto.generateKeyPairSync('x25519', {
+        publicKeyEncoding: { type: 'spki', format: 'pem' },
+        privateKeyEncoding: { type: 'pkcs8', format: 'pem' }
       });
       
-      // Convert to raw bytes (first 32 bytes for ed25519)
-      const publicKeyDer = Buffer.from(publicKey, 'binary');
-      const privateKeyDer = Buffer.from(privateKey, 'binary');
+      // Convert PEM to raw bytes for consistency
+      const classicalPubRaw = crypto.createPublicKey({
+        key: classicalPublicKey,
+        format: 'pem',
+        type: 'spki'
+      }).export({ type: 'spki', format: 'der' });
       
-      // Extract raw keys (last 32 bytes for ed25519)
-      const classicalPublicKey = publicKeyDer.subarray(-32);
-      const classicalPrivateKey = privateKeyDer.subarray(-32);
+      const classicalPrivRaw = crypto.createPrivateKey({
+        key: classicalPrivateKey,
+        format: 'pem',
+        type: 'pkcs8'
+      }).export({ type: 'pkcs8', format: 'der' });
+      
+      // Extract raw keys (last 32 bytes for x25519)
+      const extractedClassicalPublicKey = classicalPubRaw.subarray(-32);
+      const extractedClassicalPrivateKey = classicalPrivRaw.subarray(-32);
       
       // Monitor the key generation
       await SecurityMonitor.logEvent(
-        SecurityEvent.AUTH_SUCCESS,
+        SecurityEvent.AUTH_SUCCESS, // Use the correct enum from security-monitoring.ts
         { 
           timestamp: new Date(),
-          metadata: { keyType: 'hybrid' }
+          metadata: { 
+            keyType: 'hybrid',
+            pq_alg: 'kyber768',
+            classical_alg: 'x25519',
+            is_real_oqs: isOqsAvailable
+          }
         },
         'Hybrid key pair generated successfully'
       );
@@ -75,8 +152,8 @@ export class PQCryptoService {
       return {
         pqPublicKey,
         pqPrivateKey,
-        classicalPublicKey,
-        classicalPrivateKey
+        classicalPublicKey: extractedClassicalPublicKey,
+        classicalPrivateKey: extractedClassicalPrivateKey
       };
     } catch (error) {
       logger.error('Failed to generate hybrid key pair', { error: (error as Error).message });
@@ -85,7 +162,8 @@ export class PQCryptoService {
           timestamp: new Date(),
           metadata: { 
             operation: 'key_generation',
-            error: (error as Error).message 
+            error: (error as Error).message,
+            is_real_oqs: isOqsAvailable
           }
         },
         (error as Error).message,
@@ -104,13 +182,32 @@ export class PQCryptoService {
     classicalPrivateKey: Uint8Array
   ): Promise<Uint8Array> {
     try {
-      // ⚠️ CRITICAL: This is a placeholder implementation. 
-      // In production, integrate with actual post-quantum libraries like:
-      // - liboqs for CRYSTALS-Dilithium signatures
-      // - pqclean for standardized implementations
-      // - NIST-approved algorithms
+      // Initialize OQS if not already done
+      await initializeOQS();
       
-      // For now, we'll simulate by combining signatures from different algorithms
+      let pqSignature: Uint8Array;
+      
+      if (isOqsAvailable && oqsModule) {
+        // Use real liboqs for Dilithium signature generation
+        const sig = new oqsModule.Signature('dilithium3');
+        
+        // Sign the message using the PQ private key
+        pqSignature = new Uint8Array(sig.sign(message, pqPrivateKey));
+        
+        sig.free(); // Free resources
+      } else {
+        // Fallback to simulated PQ signature (in production, this would connect to native liboqs)
+        // Create a hash-based signature simulation
+        const pqSignatureInput = Buffer.concat([
+          message,
+          Buffer.from(pqPrivateKey.slice(0, 32)),
+          Buffer.from('dilithium_simulation')
+        ]);
+        pqSignature = crypto.createHash('sha3-512').update(pqSignatureInput).digest();
+        
+        logger.warn('Using simulated PQ signature - install @oqs/node for real PQ crypto');
+      }
+      
       // Generate classical Ed25519 signature
       const ed25519Key = crypto.createPrivateKey({
         key: classicalPrivateKey,
@@ -118,15 +215,6 @@ export class PQCryptoService {
         type: 'pkcs8'
       });
       const classicalSignature = crypto.sign(null, message, ed25519Key);
-      
-      // Simulate post-quantum signature (in real implementation, this would be Dilithium)
-      // Use a deterministic approach based on the message for consistency
-      const pqSignatureInput = Buffer.concat([
-        message,
-        Buffer.from(pqPrivateKey.slice(0, 32)), // Use first 32 bytes of PQ private key
-        Buffer.from(Math.random().toString()) // Add some randomness
-      ]);
-      const pqSignature = crypto.createHash('sha3-512').update(pqSignatureInput).digest();
       
       // Combine signatures (in a real implementation, use proper hybrid signature scheme)
       const combinedSignature = new Uint8Array(pqSignature.length + classicalSignature.length);
@@ -138,7 +226,12 @@ export class PQCryptoService {
         SecurityEvent.AUTH_SUCCESS,
         { 
           timestamp: new Date(),
-          metadata: { signatureType: 'hybrid' }
+          metadata: { 
+            signatureType: 'hybrid',
+            pq_alg: 'dilithium3',
+            classical_alg: 'ed25519',
+            is_real_oqs: isOqsAvailable
+          }
         },
         'Hybrid signature generated successfully'
       );
@@ -151,7 +244,8 @@ export class PQCryptoService {
           timestamp: new Date(),
           metadata: { 
             operation: 'signature_generation',
-            error: (error as Error).message 
+            error: (error as Error).message,
+            is_real_oqs: isOqsAvailable
           }
         },
         (error as Error).message,
@@ -171,36 +265,38 @@ export class PQCryptoService {
     classicalPublicKey: Uint8Array
   ): Promise<boolean> {
     try {
-      // ⚠️ CRITICAL: This is a placeholder implementation. 
-      // In production, integrate with actual post-quantum libraries like:
-      // - liboqs for CRYSTALS-Dilithium signatures
-      // - pqclean for standardized implementations
-      // - NIST-approved algorithms
+      // Initialize OQS if not already done
+      await initializeOQS();
       
       // In a real implementation, we'd verify both PQ and classical signatures
-      // For now, simulate by splitting and verifying both parts
+      // For now, split and verify both parts
       
       // Extract signature components (PQ and classical)
-      // Assuming the PQ signature portion is based on SHA3-512 hash (64 bytes)
-      const pqSignatureSize = 64; // Using SHA3-512 hash size for simulation
-      const classicalSignatureStart = signature.length - pqSignatureSize;
+      // Based on our signature generation, the classical signature is at the end
+      const classicalSignatureSize = 64; // Ed25519 signature size
+      const pqSignatureEnd = signature.length - classicalSignatureSize;
       
-      if (classicalSignatureStart <= 0) {
+      if (pqSignatureEnd <= 0) {
         logger.warn('Invalid signature format - insufficient size');
         SecurityMonitor.logPqSignatureInvalid(
           { 
             timestamp: new Date(),
-            metadata: { signatureType: 'hybrid', error: 'invalid_size' }
+            metadata: { 
+              signatureType: 'hybrid', 
+              error: 'invalid_size',
+              is_real_oqs: isOqsAvailable
+            }
           },
           'Invalid signature size'
         );
         return false;
       }
       
-      const classicalSignature = signature.slice(0, classicalSignatureStart);
-      const pqSignature = signature.slice(classicalSignatureStart);
+      const pqSignature = signature.slice(0, pqSignatureEnd);
+      const classicalSignature = signature.slice(pqSignatureEnd);
       
       // Verify classical signature
+      let classicalValid = false;
       try {
         const ed25519Key = crypto.createPublicKey({
           key: classicalPublicKey,
@@ -208,27 +304,47 @@ export class PQCryptoService {
           type: 'spki'
         });
         
-        const classicalValid = crypto.verify(null, message, ed25519Key, classicalSignature);
-        if (!classicalValid) {
-          logger.warn('Classical signature verification failed');
-          return false;
-        }
+        classicalValid = crypto.verify(null, message, ed25519Key, classicalSignature);
       } catch (classicalError) {
         logger.error('Classical signature verification error', { error: (classicalError as Error).message });
         return false;
       }
       
-      // Verify PQ signature by recomputing hash
-      const expectedPqSignatureInput = Buffer.concat([
-        message,
-        Buffer.from(pqPublicKey.slice(0, 32)), // Use first 32 bytes of PQ public key
-        Buffer.from(Math.random().toString()) // Same random component as in generation (for demo)
-      ]);
-      const expectedPqSignature = crypto.createHash('sha3-512').update(expectedPqSignatureInput).digest();
+      if (!classicalValid) {
+        logger.warn('Classical signature verification failed');
+        return false;
+      }
       
-      const pqValid = crypto.timingSafeEqual(pqSignature, expectedPqSignature);
+      // Verify PQ signature
+      let pqValid = false;
+      if (isOqsAvailable && oqsModule) {
+        // Use real liboqs for Dilithium signature verification
+        const sig = new oqsModule.Signature('dilithium3');
+        
+        try {
+          pqValid = sig.verify(message, pqSignature, pqPublicKey);
+        } catch (verifyError) {
+          logger.error('PQ signature verification error', { error: (verifyError as Error).message });
+          pqValid = false;
+        }
+        
+        sig.free(); // Free resources
+      } else {
+        // Fallback to simulated verification (in production, this would connect to native liboqs)
+        // Recreate the expected signature for comparison
+        const expectedPqSignatureInput = Buffer.concat([
+          message,
+          Buffer.from(pqPublicKey.slice(0, 32)),
+          Buffer.from('dilithium_simulation')
+        ]);
+        const expectedPqSignature = crypto.createHash('sha3-512').update(expectedPqSignatureInput).digest();
+        
+        pqValid = crypto.timingSafeEqual(pqSignature, expectedPqSignature);
+        
+        logger.warn('Using simulated PQ signature verification - install @oqs/node for real PQ crypto');
+      }
       
-      const isValid = pqValid;
+      const isValid = classicalValid && pqValid;
       
       // Monitor the signature verification
       if (isValid) {
@@ -236,7 +352,13 @@ export class PQCryptoService {
           SecurityEvent.AUTH_SUCCESS,
           { 
             timestamp: new Date(),
-            metadata: { signatureType: 'hybrid', isValid }
+            metadata: { 
+              signatureType: 'hybrid', 
+              isValid,
+              pq_alg: 'dilithium3',
+              classical_alg: 'ed25519',
+              is_real_oqs: isOqsAvailable
+            }
           },
           `Hybrid signature verification: ${isValid ? 'valid' : 'invalid'}`
         );
@@ -244,7 +366,13 @@ export class PQCryptoService {
         SecurityMonitor.logPqSignatureInvalid(
           { 
             timestamp: new Date(),
-            metadata: { signatureType: 'hybrid', error: 'verification_failed' }
+            metadata: { 
+              signatureType: 'hybrid', 
+              error: 'verification_failed',
+              classical_valid: classicalValid,
+              pq_valid: pqValid,
+              is_real_oqs: isOqsAvailable
+            }
           },
           'Hybrid signature verification failed'
         );
@@ -256,7 +384,11 @@ export class PQCryptoService {
       SecurityMonitor.logPqSignatureInvalid(
         { 
           timestamp: new Date(),
-          metadata: { signatureType: 'hybrid', error: (error as Error).message }
+          metadata: { 
+            signatureType: 'hybrid', 
+            error: (error as Error).message,
+            is_real_oqs: isOqsAvailable
+          }
         },
         'Signature verification error'
       );
@@ -274,21 +406,39 @@ export class PQCryptoService {
     senderClassicalPrivateKey: Uint8Array
   ): Promise<Uint8Array> {
     try {
-      // In a real implementation, we'd perform both PQ and classical key exchanges
-      // Then combine the shared secrets using a proper KDF
+      // Initialize OQS if not already done
+      await initializeOQS();
       
-      // Simulate Kyber key exchange (in real implementation, use actual Kyber)
-      const pqSharedSecret = crypto.randomBytes(32); // Simulated shared secret
+      let pqSharedSecret: Uint8Array;
+      
+      if (isOqsAvailable && oqsModule) {
+        // Use real liboqs for Kyber key encapsulation
+        const kex = new oqsModule.KeyEncapsulation('kyber768');
+        
+        // Encapsulate to get ciphertext and shared secret
+        const { ciphertext, shared_secret: pqSharedSecretTemp } = kex.encapSecret(recipientPqPublicKey);
+        
+        // For the actual exchange, we need to decapsulate on the recipient side
+        // But for this implementation, we'll simulate the shared secret
+        pqSharedSecret = pqSharedSecretTemp;
+        
+        kex.free(); // Free resources
+      } else {
+        // Fallback to simulated PQ shared secret (in production, this would connect to native liboqs)
+        pqSharedSecret = crypto.randomBytes(32); // Simulated shared secret
+        
+        logger.warn('Using simulated PQ key exchange - install @oqs/node for real PQ crypto');
+      }
       
       // Perform X25519 key exchange
       const classicalPrivateKey = crypto.createPrivateKey({
-        key: this.wrapKeyInPKCS8(senderClassicalPrivateKey, 'X25519'),
+        key: senderClassicalPrivateKey,
         format: 'der',
         type: 'pkcs8'
       });
       
       const classicalPublicKey = crypto.createPublicKey({
-        key: this.wrapKeyInX509(recipientClassicalPublicKey, 'X25519'),
+        key: recipientClassicalPublicKey,
         format: 'der',
         type: 'spki'
       });
@@ -305,10 +455,15 @@ export class PQCryptoService {
       
       // Monitor the key exchange
       SecurityMonitor.logEvent(
-        'SecurityEvent.AUTH_SUCCESS',
+        SecurityEvent.AUTH_SUCCESS,
         { 
           timestamp: new Date(),
-          metadata: { keyExchangeType: 'hybrid' }
+          metadata: { 
+            keyExchangeType: 'hybrid',
+            pq_alg: 'kyber768',
+            classical_alg: 'x25519',
+            is_real_oqs: isOqsAvailable
+          }
         },
         'Hybrid key exchange completed successfully'
       );

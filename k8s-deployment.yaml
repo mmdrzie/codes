@@ -1,0 +1,116 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: quantumiq-app
+  labels:
+    app: quantumiq
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: quantumiq
+  template:
+    metadata:
+      labels:
+        app: quantumiq
+    spec:
+      containers:
+      - name: quantumiq
+        image: quantumiq:latest
+        ports:
+        - containerPort: 3000
+        env:
+        - name: NODE_ENV
+          value: "production"
+        - name: NEXT_PUBLIC_BASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: quantumiq-secrets
+              key: next-public-base-url
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1001
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: false  # Need write access for temporary files
+          capabilities:
+            drop:
+            - ALL
+        livenessProbe:
+          httpGet:
+            path: /api/health/security
+            port: 3000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /api/health/security
+            port: 3000
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        volumeMounts:
+        - name: tmp-volume
+          mountPath: /tmp
+      volumes:
+      - name: tmp-volume
+        emptyDir: {}
+      securityContext:
+        runAsNonRoot: true
+        fsGroup: 2000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: quantumiq-service
+spec:
+  selector:
+    app: quantumiq
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 3000
+  type: LoadBalancer
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: quantumiq-ingress
+  annotations:
+    nginx.ingress.kubernetes.io/rate-limit-connections: "10"
+    nginx.ingress.kubernetes.io/rate-limit-requests-per-second: "100"
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+spec:
+  tls:
+  - hosts:
+    - your-domain.com
+    secretName: quantumiq-tls
+  rules:
+  - host: your-domain.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: quantumiq-service
+            port:
+              number: 80
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: quantumiq-secrets
+type: Opaque
+data:
+  # These should be base64 encoded values
+  jwt-access-secret: <base64-encoded-value>
+  jwt-refresh-secret: <base64-encoded-value>
+  wallet-jwt-secret: <base64-encoded-value>
+  next-public-base-url: <base64-encoded-url>

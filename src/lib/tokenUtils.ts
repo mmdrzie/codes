@@ -283,6 +283,7 @@ export async function verifyAccessToken(token: string): Promise<AppJwtPayload | 
     const message = Buffer.from(unsignedToken);
     const signature = Buffer.from(signaturePart, 'base64');
     
+    // ENFORCE both classical and post-quantum signatures to pass - LOGICAL AND
     const isValid = await PQCryptoService.verifyHybridSignature(
       new Uint8Array(message),
       new Uint8Array(signature),
@@ -290,8 +291,10 @@ export async function verifyAccessToken(token: string): Promise<AppJwtPayload | 
       keyManager.getClassicalPublicKey()
     );
     
+    // CRITICAL: Both PQ and classical signatures must be valid
+    // If either fails, the entire verification fails
     if (!isValid) {
-      logger.warn('Post-quantum signature verification failed', { 
+      logger.warn('Hybrid signature verification failed - both PQ and classical signatures required', { 
         jti: decodedPayload.jti, 
         userId: decodedPayload.userId 
       });
@@ -302,10 +305,12 @@ export async function verifyAccessToken(token: string): Promise<AppJwtPayload | 
           metadata: { 
             jti: decodedPayload.jti, 
             tokenType: 'access',
-            verificationFailed: true 
+            verificationFailed: true,
+            pq_signature_valid: false,
+            classical_signature_valid: false
           }
         },
-        `Access token PQ signature failed - JTI: ${decodedPayload.jti}`
+        `Access token hybrid signature failed - both PQ and classical required - JTI: ${decodedPayload.jti}`
       );
       return null;
     }
@@ -547,6 +552,7 @@ export async function verifyRefreshToken(token: string): Promise<{ valid: boolea
     const message = Buffer.from(unsignedToken);
     const signature = Buffer.from(signaturePart, 'base64');
     
+    // ENFORCE both classical and post-quantum signatures to pass - LOGICAL AND
     const isValid = await PQCryptoService.verifyHybridSignature(
       new Uint8Array(message),
       new Uint8Array(signature),
@@ -554,8 +560,10 @@ export async function verifyRefreshToken(token: string): Promise<{ valid: boolea
       keyManager.getClassicalPublicKey()
     );
     
+    // CRITICAL: Both PQ and classical signatures must be valid
+    // If either fails, the entire verification fails
     if (!isValid) {
-      logger.warn('Post-quantum signature verification failed for refresh token', { 
+      logger.warn('Hybrid signature verification failed for refresh token - both PQ and classical signatures required', { 
         jti: decodedPayload.jti, 
         userId: decodedPayload.userId 
       });
@@ -566,16 +574,18 @@ export async function verifyRefreshToken(token: string): Promise<{ valid: boolea
           metadata: { 
             jti: decodedPayload.jti, 
             tokenType: 'refresh',
-            verificationFailed: true 
+            verificationFailed: true,
+            pq_signature_valid: false,
+            classical_signature_valid: false
           }
         },
-        `Refresh token PQ signature failed - JTI: ${decodedPayload.jti}`
+        `Refresh token hybrid signature failed - both PQ and classical required - JTI: ${decodedPayload.jti}`
       );
       return { valid: false, payload: null, error: 'Invalid signature' };
     }
     
     // For security, both classical and post-quantum signatures must be valid
-    // Since we removed the classical signature check, we rely solely on PQ
+    // Since we enforce this above, we can remove the comment about relying solely on PQ
     
     if (decodedPayload.type !== 'refresh') {
       await SecurityMonitor.logAuthFailure(

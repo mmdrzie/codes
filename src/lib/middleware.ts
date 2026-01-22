@@ -71,7 +71,7 @@ export async function authenticateRequest(request: NextRequest): Promise<{
       }
     }
     
-    // Validate session binding (IP and User-Agent consistency)
+    // Validate session binding (IP and User-Agent consistency) - STRICT VALIDATION
     const sessionBindingValid = await validateSessionBinding(request, payload.userId);
     if (!sessionBindingValid) {
       logger.warn('Session binding validation failed', {
@@ -181,7 +181,7 @@ export async function validateSessionBinding(request: NextRequest, userId: strin
   try {
     const currentIp = getClientIp(request);
     const currentUserAgent = getUserAgent(request);
-    
+
     // Validate that essential session binding factors are present
     if (!currentIp || !currentUserAgent) {
       logger.warn('Missing IP or User-Agent for session binding validation', {
@@ -192,8 +192,32 @@ export async function validateSessionBinding(request: NextRequest, userId: strin
       return false;
     }
 
-    // In a real implementation, you would check these values against stored session data
-    // The session would be invalidated if IP or User-Agent doesn't match
+    // Implement strict session validation using Redis
+    const sessionKey = `session_binding:${userId}`;
+    const storedSession = await getSessionBindingData(sessionKey);
+    
+    if (storedSession) {
+      // Check if device fingerprint matches the stored session data
+      if (storedSession.ipAddress !== currentIp || 
+          storedSession.userAgent !== currentUserAgent) {
+        logger.warn('Session device mismatch detected', {
+          userId,
+          expectedIp: storedSession.ipAddress,
+          actualIp: currentIp,
+          expectedUserAgent: storedSession.userAgent,
+          actualUserAgent: currentUserAgent
+        });
+        return false; // Return boolean as expected by the calling function
+      }
+    } else {
+      // First time access, store the session binding data
+      await setSessionBindingData(sessionKey, {
+        ipAddress: currentIp,
+        userAgent: currentUserAgent,
+        createdAt: new Date().toISOString()
+      });
+    }
+
     logger.info('Session binding validation', {
       userId,
       currentIp,
@@ -201,13 +225,11 @@ export async function validateSessionBinding(request: NextRequest, userId: strin
       timestamp: new Date().toISOString()
     });
 
-    // This would normally check against stored session data
-    // Return true if binding is valid, false otherwise
     return true;
   } catch (error) {
-    logger.error('Session binding validation error', { 
-      error: (error as Error).message, 
-      userId 
+    logger.error('Session binding validation error', {
+      error: (error as Error).message,
+      userId
     });
     return false;
   }
@@ -225,8 +247,8 @@ export function addSecurityHeaders(response: NextResponse): NextResponse {
     'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
     'Content-Security-Policy': [
       "default-src 'self'",
-      "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
-      "style-src 'self' 'unsafe-inline'",
+      "script-src 'self'",  // Disallow inline scripts and eval
+      "style-src 'self'",   // Disallow inline styles
       "img-src 'self' data: https:",
       "font-src 'self' https:",
       "connect-src 'self' https:",
@@ -269,4 +291,31 @@ function getClientIp(request: NextRequest): string | null {
  */
 function getUserAgent(request: NextRequest): string | null {
   return request.headers.get('user-agent');
+}
+
+/**
+ * Get session binding data from Redis
+ */
+async function getSessionBindingData(key: string): Promise<any> {
+  try {
+    const { Redis } = await import('@upstash/redis');
+    const redis = Redis.fromEnv();
+    return await redis.get(key);
+  } catch (error) {
+    logger.error('Failed to retrieve session binding data', { error: (error as Error).message });
+    return null;
+  }
+}
+
+/**
+ * Set session binding data in Redis
+ */
+async function setSessionBindingData(key: string, data: any): Promise<void> {
+  try {
+    const { Redis } = await import('@upstash/redis');
+    const redis = Redis.fromEnv();
+    await redis.setex(key, 7 * 24 * 60 * 60, data); // 7 days expiry
+  } catch (error) {
+    logger.error('Failed to store session binding data', { error: (error as Error).message });
+  }
 }

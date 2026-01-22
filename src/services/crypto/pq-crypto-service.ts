@@ -114,7 +114,7 @@ export class PQCryptoService {
       isRealPQ: isOqsAvailable,
       algorithms: isOqsAvailable 
         ? ['kyber768', 'dilithium3', 'x25519', 'ed25519']
-        : ['simulated_kyber', 'simulated_dilithium', 'x25519', 'ed25519']
+        : [] // Empty array if not available - no fallback to simulated algorithms
     };
   }
 

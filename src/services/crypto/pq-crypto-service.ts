@@ -7,6 +7,9 @@ let oqsModule: any = null;
 let isOqsAvailable = false;
 let initializationPromise: Promise<void> | null = null;
 
+// Add startup invariant check
+const PQ_ENABLED: boolean = true;
+
 // Initialize OQS asynchronously
 async function initializeOQS(): Promise<void> {
   if (initializationPromise) {
@@ -19,20 +22,51 @@ async function initializeOQS(): Promise<void> {
       oqsModule = await import('@oqs/node');
       isOqsAvailable = true;
       logger.info('OQS module loaded successfully');
+      
+      // Verify the invariant
+      if (PQ_ENABLED !== true) {
+        logger.error('CRITICAL: PQ_ENABLED invariant violated. Terminating process.');
+        process.exit(1);
+      }
     } catch (error) {
       logger.error('OQS module not available - CRITICAL SECURITY FAILURE: Post-quantum cryptography unavailable', { error: (error as Error).message });
       
-      // FAIL HARD - Do not allow fallback to simulated crypto
-      if (process.env.NODE_ENV === 'production') {
-        logger.error('CRITICAL: Production environment requires OQS module. Terminating process.');
-        process.exit(1);
-      } else {
-        throw new Error('Post-quantum cryptography not available. OQS module failed to load.');
-      }
+      // FAIL HARD - Do not allow fallback to simulated crypto under ANY circumstances
+      logger.error('CRITICAL: Production environment requires OQS module. Terminating process.');
+      process.exit(1);  // Always terminate, regardless of environment
     }
   })();
   
   return initializationPromise;
+}
+
+/**
+ * Runtime guard: Any signature verification without PQ must hard fail
+ */
+function assertPurePQCryptoUsage(operation: string): void {
+  if (!isOqsAvailable) {
+    logger.error(`CRITICAL: Attempted ${operation} without post-quantum cryptography available`, {
+      operation,
+      timestamp: new Date().toISOString()
+    });
+    
+    // Emit critical security event
+    SecurityMonitor.logPqCryptoError(
+      { 
+        timestamp: new Date(),
+        metadata: { 
+          operation,
+          error: 'post_quantum_crypto_unavailable',
+          is_real_oqs: isOqsAvailable
+        }
+      },
+      `Attempted ${operation} without post-quantum cryptography`,
+      operation
+    );
+    
+    // Hard fail
+    process.exit(1);
+  }
 }
 
 /**
@@ -96,6 +130,9 @@ export class PQCryptoService {
     try {
       // Initialize OQS - this will throw if OQS is not available
       await initializeOQS();
+      
+      // Runtime guard: ensure we're using pure PQ crypto
+      assertPurePQCryptoUsage('generateHybridKeyPair');
       
       let pqPublicKey: Uint8Array, pqPrivateKey: Uint8Array;
       

@@ -280,13 +280,12 @@ export async function validateSessionBinding(
       sessionMemory.set(sessionId, { meta: sessionData, expiresAt });
     }
 
-    // Validate IP and User-Agent consistency with enhanced security checks
-    const isIpConsistent = !sessionData.ipAddress || 
-                          currentIp.startsWith(sessionData.ipAddress.split(':')[0]) || 
-                          currentIp === sessionData.ipAddress;
+    // Validate IP and User-Agent consistency with ENFORCED strict security checks
+    const isIpConsistent = sessionData.ipAddress && 
+                          (currentIp === sessionData.ipAddress);
     
-    const isUserAgentConsistent = !sessionData.userAgent || 
-                                 currentUserAgent.includes(sessionData.userAgent.split(' ')[0]);
+    const isUserAgentConsistent = sessionData.userAgent && 
+                                 currentUserAgent === sessionData.userAgent;
     
     // Enhanced security: Check for suspicious patterns
     const isIpSuspicious = sessionData.ipAddress && 

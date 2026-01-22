@@ -6,7 +6,7 @@
 import { Redis } from '@upstash/redis';
 import { logger } from './logger';
 import { SecurityMonitor, SecurityEvent } from './security-monitoring';
-import { DoubleEntryLedger } from './financial-core/ledger';
+
 
 // Redis for system control state management
 const redis = Redis.fromEnv();
@@ -34,13 +34,12 @@ export enum FreezeType {
 
 // Freeze reason codes
 export enum FreezeReason {
-  LEDGER_INVARIANT_VIOLATION = 'ledger_invariant_violation',
-  RECONCILIATION_MISMATCH = 'reconciliation_mismatch',
+  WALLET_OPERATION_VIOLATION = 'wallet_operation_violation',
+  CUSTODY_INTEGRITY_FAILURE = 'custody_integrity_failure',
   FULL_REDIS_OUTAGE = 'full_redis_outage',
   SECURITY_BREACH = 'security_breach',
   DATA_CORRUPTION = 'data_corruption',
   MANUAL_ADMIN_ACTION = 'manual_admin_action',
-  REGULATORY_COMPLIANCE = 'regulatory_compliance',
   CUSTOMER_REQUEST = 'customer_request',
   FRAUD_DETECTION = 'fraud_detection',
   TECHNICAL_MAINTENANCE = 'technical_maintenance'

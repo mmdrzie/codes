@@ -1,10 +1,10 @@
-# Bank-Grade Security Implementation with Real SIEM Integration
+# Custodial Security Implementation with Real SIEM Integration
 
 This document outlines the comprehensive security architecture implemented for the authentication and session management system, featuring real SIEM integration for enterprise-grade monitoring and auditing.
 
-## 🏦 Bank-Grade Security Overview
+## 🔒 Custodial Security Overview
 
-Our implementation follows zero-trust principles with multiple layers of security controls designed to withstand sophisticated attacks targeting financial-grade applications.
+Our implementation follows zero-trust principles with multiple layers of security controls designed to withstand sophisticated attacks targeting high-value custodial applications.
 
 ### Core Security Principles
 
@@ -95,6 +95,7 @@ interface SecurityEvent {
 | `rate_limit_breach` | Medium | Request rate exceeded threshold |
 | `geo_ip_anomaly` | High | Geographic access pattern anomaly |
 | `unauthorized_access` | High | Permission violation detected |
+| `wallet_operation_blocked` | Critical | Wallet operation blocked by security controls |
 
 ## 🧠 Abuse & Attack Detection
 
@@ -139,7 +140,7 @@ interface SecurityEvent {
 - Immutable event logging
 - Cryptographic event chaining
 - Chain of custody preservation
-- Regulatory compliance reporting
+- Security forensics capabilities
 
 ## 🛠️ Technical Implementation
 
@@ -210,7 +211,7 @@ While the system implements comprehensive security controls, the following risks
 4. **Quantum Computing Advancement**: Rapid developments in quantum computing capability
 5. **Social Engineering**: Human factor exploitation
 
-## 🎯 Bank-Grade Security Achievement
+## 🎯 Custodial Security Achievement
 
 **Status: ACHIEVED**
 
@@ -224,4 +225,4 @@ The implementation meets all specified requirements:
 - ✅ Fail-closed security posture
 - ✅ Automated security self-tests
 
-The system is ready for deployment in production environments handling sensitive financial transactions and personal data.
+The system is ready for deployment in production environments handling high-value custodial operations and sensitive personal data.

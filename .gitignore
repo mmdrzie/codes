@@ -1,46 +1,51 @@
-# Documentation and requirements files
-*.md
+```
+# Dependencies
+node_modules/
 
-# Build artifacts and distributions
-build/
+# Build artifacts
 dist/
-*.egg-info/
+build/
+target/
 
-# Environment files
+# Python specific
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.py.class
+*.so
+*.egg-info/
+.eggs/
+.venv/
+venv/
 .env
 .env.local
-*.env.*
+.env.*
 
 # Logs
 *.log
 
-# Temporary files
-*.tmp
-*.swp
-
-# IDE and editor files
-.vscode/
-.idea/
-*.pyc
-__pycache__/
-
-# Dependency directories
-node_modules/
-venv/
-.venv/
-.mypy_cache/
-.pytest_cache/
-target/
-.gradle/
-
-# System files
-.DS_Store
-Thumbs.db
-
-# Coverage reports
+# Coverage
 coverage/
 htmlcov/
 .coverage
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*.tmp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# MyPy
+.mypy_cache/
+
+# PyTest
+.pytest_cache/
 
 # Compressed files
 *.zip
@@ -65,3 +70,4 @@ htmlcov/
 *.tar.bz2
 *.tar.xz
 *.tar.zst
+```

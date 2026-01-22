@@ -1,20 +1,20 @@
-# OPERATIONAL RUNBOOKS - BANK/GRADE FINANCIAL SYSTEM
+# OPERATIONAL RUNBOOKS - CUSTODIAL SECURITY SYSTEM
 
-## 1. LEDGER INVARIANT VIOLATION
+## 1. CUSTODY OPERATION VIOLATION
 
-**Detection Trigger:** Double-entry accounting imbalance detected during transaction recording or reconciliation
+**Detection Trigger:** Wallet operation violation detected during transaction recording or integrity validation
 
 **Signal Source:** 
-- Application logs: "Double-entry accounting violation" 
-- SIEM: SecurityEvent.SUSPICIOUS_ACTIVITY with violation: 'double_entry_violation'
-- Metrics: ledger_validation_errors_total counter
+- Application logs: "Wallet operation violation" 
+- SIEM: SecurityEvent.SUSPICIOUS_ACTIVITY with violation: 'wallet_operation_violation'
+- Metrics: custody_validation_errors_total counter
 
 **Severity Classification:** CRITICAL (P0)
 
 **Immediate Automated Action:**
-- Transaction recording fails and returns false
+- Operation recording fails and returns false
 - Suspicious activity logged to SIEM
-- Transaction state set to FAILED
+- Operation state set to FAILED
 
 **Human Escalation Path:**
 - On-call engineer paged immediately
@@ -27,35 +27,35 @@
 - T+15m: Executive team notified if unresolved
 
 **Rollback or Freeze Behavior:**
-- Transaction rejected and marked as failed
-- No funds movement occurs
-- System continues processing other transactions
+- Operation rejected and marked as failed
+- No wallet operations occur
+- System continues processing other operations
 
-**Post-Incident Reconciliation Steps:**
-- Manual review of all transactions in affected batch
-- Identify root cause of imbalance
-- Run ledger reconciliation report
-- Verify all account balances match expected values
+**Post-Incident Integrity Validation Steps:**
+- Manual review of all operations in affected batch
+- Identify root cause of violation
+- Run custody integrity validation report
+- Verify all wallet balances match expected values
 
-## 2. RECONCILIATION MISMATCH
+## 2. INTEGRITY VALIDATION MISMATCH
 
-**Detection Trigger:** Discrepancy found during ledger reconciliation process
+**Detection Trigger:** Discrepancy found during custody integrity validation process
 
 **Signal Source:**
-- Application logs: "Ledger reconciliation found issues"
-- SIEM: SecurityEvent.CRITICAL with event: 'ledger_reconciliation_issues'
-- Metrics: ledger_reconciliation_failures_total
+- Application logs: "Custody integrity validation found issues"
+- SIEM: SecurityEvent.CRITICAL with event: 'custody_integrity_issues'
+- Metrics: custody_integrity_failures_total
 
 **Severity Classification:** CRITICAL (P0)
 
 **Immediate Automated Action:**
-- Reconciliation process returns failure status
+- Integrity validation process returns failure status
 - CRITICAL SIEM event emitted
 - Detailed discrepancy report generated
 
 **Human Escalation Path:**
 - Production engineering team paged
-- Finance operations team notified
+- Security operations team notified
 - Compliance team informed
 
 **Time Limits:**
@@ -64,31 +64,31 @@
 - T+15m: CTO and compliance officer notified
 
 **Rollback or Freeze Behavior:**
-- NEW transactions suspended until resolution
+- NEW operations suspended until resolution
 - Read-only mode activated for balance queries
 - Manual intervention required to resume operations
 
-**Post-Incident Reconciliation Steps:**
-- Complete manual reconciliation of all accounts
-- Identify all affected transactions
+**Post-Incident Integrity Validation Steps:**
+- Complete manual validation of all wallets
+- Identify all affected operations
 - Correct any identified discrepancies
 - Resume normal operations after validation
 
-## 3. DOUBLE-SPEND DETECTION
+## 3. DUPLICATE OPERATION DETECTION
 
-**Detection Trigger:** Same transaction ID processed multiple times with different parameters
+**Detection Trigger:** Same operation ID processed multiple times with different parameters
 
 **Signal Source:**
-- Application logs: "Duplicate transaction" entries
-- SIEM: SecurityEvent.SUSPICIOUS_ACTIVITY with type: 'duplicate_transaction'
-- Metrics: duplicate_transaction_attempts_total
+- Application logs: "Duplicate operation" entries
+- SIEM: SecurityEvent.SUSPICIOUS_ACTIVITY with type: 'duplicate_operation'
+- Metrics: duplicate_operation_attempts_total
 
 **Severity Classification:** CRITICAL (P0)
 
 **Immediate Automated Action:**
-- Second transaction attempt rejected
+- Second operation attempt rejected
 - Suspicious activity logged
-- Transaction processing locked for affected accounts temporarily
+- Operation processing locked for affected wallets temporarily
 
 **Human Escalation Path:**
 - Fraud detection team notified
@@ -101,13 +101,13 @@
 - T+15m: Legal team informed if necessary
 
 **Rollback or Freeze Behavior:**
-- Suspicious transactions blocked
-- Affected accounts placed on temporary hold
+- Suspicious operations blocked
+- Affected wallets placed on temporary hold
 - Manual review required before resuming
 
-**Post-Incident Reconciliation Steps:**
+**Post-Incident Integrity Validation Steps:**
 - Investigation of how duplicate was allowed
-- Verification of all affected accounts
+- Verification of all affected wallets
 - Compensation process initiated if needed
 - System hardening to prevent recurrence
 
@@ -176,13 +176,13 @@
 
 **Rollback or Freeze Behavior:**
 - System enters complete freeze mode
-- All financial operations suspended
+- All wallet operations suspended
 - Read-only API maintained for status checks
 - Manual override required to resume operations
 
-**Post-Incident Reconciliation Steps:**
-- Complete ledger reconciliation after Redis recovery
-- Verify all pending transactions
+**Post-Incident Integrity Validation Steps:**
+- Complete custody validation after Redis recovery
+- Verify all pending operations
 - Process backlog systematically
 - Full system health checks performed
 

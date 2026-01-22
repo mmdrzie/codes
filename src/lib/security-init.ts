@@ -8,6 +8,9 @@ import { SecurityMonitor } from './security-monitoring';
 import { siemService } from './siem-integration';
 import { SecurityAudit } from './security-audit';
 import { KeyManager } from './tokenUtils';
+import { SecurityEnhancements } from './security-enhancements';
+import { PQCValidator } from './pqc-validator';
+import { SecretsManager } from './secrets-manager';
 
 export class SecurityInitializer {
   private static initialized = false;
@@ -24,19 +27,22 @@ export class SecurityInitializer {
     logger.info('Starting security initialization');
 
     try {
-      // 1. Initialize cryptographic keys
+      // 1. Initialize comprehensive security enhancements (includes PQC and secrets validation)
+      await SecurityEnhancements.initialize();
+      
+      // 2. Initialize cryptographic keys
       await this.initializeCryptoKeys();
       
-      // 2. Validate environment configuration
+      // 3. Validate environment configuration
       await this.validateEnvironment();
       
-      // 3. Test SIEM connectivity
+      // 4. Test SIEM connectivity
       await this.testSIEMConnectivity();
       
-      // 4. Run security audit
+      // 5. Run security audit
       await this.runSecurityAudit();
       
-      // 5. Initialize security monitoring
+      // 6. Initialize security monitoring
       await this.initializeSecurityMonitoring();
 
       this.initialized = true;

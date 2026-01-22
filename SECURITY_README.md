@@ -69,6 +69,65 @@ This document describes the security architecture and implementation of the high
 - Short-lived access tokens
 - Secure refresh token rotation
 
+### Proxy Configuration & IP Spoofing Prevention
+- Secure IP address extraction with trusted proxy validation
+- Header injection prevention
+- CIDR range checking for proxy networks
+- Proper IP format validation to prevent injection attacks
+
+### CSP (Content Security Policy) Hardening
+- Dynamic nonce generation for each request
+- Elimination of 'unsafe-inline' and 'unsafe-eval' in production
+- Strict directive policies for different environments
+- Per-request CSP header injection
+
+### Post-Quantum Cryptography Failure Handling
+- System fails closed if PQC libraries are unavailable
+- No fallback to classical-only cryptography
+- Explicit validation at startup
+- Custom error handling and alerts
+
+### Secrets Management and CI/CD Configuration
+- Zero secrets in source code policy
+- Externalized configuration management
+- Automated validation of secret strength
+- Runtime secrets validation with minimum entropy requirements
+
+### Rate Limiting & DoS Protection
+- Cryptographic hash-based identifiers for collision resistance
+- Multi-layer protection (IP, user, behavior, combined)
+- Adaptive rate limiting strategies
+- Sliding window algorithms for accurate request counting
+
+### CSP Nonce Implementation
+- Dynamic nonce generation per request
+- Per-request CSP header injection
+- Nonce inclusion in response headers for client-side use
+
+### Session Binding Validation Enhancement
+- Strict IP/User-Agent consistency enforcement
+- Immediate session invalidation on mismatch
+- Binding validation for all requests
+- Anti-session-fixation measures with comprehensive invalidation
+
+### Error Handling & Information Disclosure
+- Generic error messages in production
+- Internal error logging without disclosure
+- Sanitized error responses
+- Detailed server-side logging for debugging
+
+### Penetration Testing & Vulnerability Scanning
+- Automated security validation script
+- npm audit integration
+- Comprehensive security posture assessment
+- Detailed reporting capabilities with severity classification
+
+### Standards Compliance
+- OWASP Top 10 mapping and implementation
+- NIST SP 800-53 controls mapping
+- FAPI (Financial-grade API) compliance
+- Industry best practices adherence
+
 ### Wallet Security
 - Operation validation and authorization
 - Transaction signing with post-quantum cryptography

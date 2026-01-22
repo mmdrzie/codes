@@ -19,10 +19,7 @@ venv/
 .env.local
 .env.*
 
-# Build directories
-dist/
-build/
-target/
+# Logs and temp files
 *.log
 *.tmp
 *.swp
@@ -32,10 +29,22 @@ target/
 .vscode/
 .idea/
 
-# Coverage
+# Coverage and testing
 coverage/
 htmlcov/
 .coverage
+.mypy_cache/
+.pytest_cache/
+
+# Build systems
+dist/
+build/
+target/
+.gradle/
+
+# System files
+.DS_Store
+Thumbs.db
 
 # Compressed files
 *.zip

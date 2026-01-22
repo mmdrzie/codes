@@ -11,10 +11,6 @@ import {
   validateCryptoRequirements,
   validateSecretsConfiguration
 } from './src/lib/security-middleware';
-import { 
-  securityEnhancementMiddleware,
-  ensureSecurityInitialization 
-} from './src/lib/security-enhancements';
 import { logger } from './src/lib/logger';
 import { isPublicRoute, isProtectedRoute } from './src/config/routes';
 import { HardenedAuthService } from './src/services/auth/hardened-auth-service';
@@ -22,6 +18,12 @@ import crypto from 'crypto';
 
 // Security configuration
 const SECURITY_CONFIG = {
+  // Rate limiting
+  GLOBAL_RATE_LIMIT: 100,
+  
+  // Request size limits
+  MAX_REQUEST_SIZE: '1mb',
+  
   // Trusted origins
   TRUSTED_ORIGINS: process.env.TRUSTED_ORIGINS?.split(',') || ['localhost', '127.0.0.1'],
 };
@@ -64,11 +66,11 @@ export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
   try {
-    // Apply comprehensive security enhancements
-    const securityResponse = await securityEnhancementMiddleware(req);
-    if (securityResponse) {
-      return securityResponse;
-    }
+    // Validate cryptographic requirements (fail closed if not met)
+    validateCryptoRequirements();
+    
+    // Validate secrets configuration (fail closed if not met)
+    validateSecretsConfiguration();
 
     // Block requests with suspicious patterns
     if (!validateRequestForSuspiciousPatterns(req)) {
@@ -82,6 +84,12 @@ export async function middleware(req: NextRequest) {
       return new NextResponse('Request blocked for security reasons', {
         status: 403,
       });
+    }
+
+    // Apply enhanced rate limiting
+    const rateLimitResponse = await applyEnhancedRateLimiting(req);
+    if (rateLimitResponse) {
+      return rateLimitResponse;
     }
 
     // Check if route is public (no authentication required)
@@ -237,58 +245,6 @@ export async function middleware(req: NextRequest) {
 }
 
 /**
- * Check if a request has suspicious patterns
- */
-function hasSuspiciousPattern(request: NextRequest): boolean {
-  const userAgent = request.headers.get('user-agent') || '';
-  const url = request.nextUrl.toString();
-  const body = ''; // Would need to get from request if needed
-  
-  // Check for common attack patterns
-  const suspiciousPatterns = [
-    /union\s+select/i,
-    /drop\s+table/i,
-    /exec\s*\(/i,
-    /<script/i,
-    /javascript:/i,
-    /on\w+\s*=/i,
-    /eval\s*\(/i,
-    /document\.cookie/i,
-    /alert\s*\(/i,
-  ];
-
-  // Check user agent
-  if (/sqlmap|nikto|nessus|acunetix|burp|owasp|nmap|masscan|gobuster|dirbuster|arachni|w3af|skipfish|zap/i.test(userAgent)) {
-    return true;
-  }
-
-  // Check URL and body for patterns
-  for (const pattern of suspiciousPatterns) {
-    if (pattern.test(url) || pattern.test(body)) {
-      return true;
-    }
-  }
-
-  return false;
-}
-
-/**
- * Get suspicious elements from request for logging
- */
-function getSuspiciousElements(request: NextRequest): string[] {
-  const elements: string[] = [];
-  const userAgent = request.headers.get('user-agent') || '';
-  const url = request.nextUrl.toString();
-  
-  if (/sqlmap|nikto|nessus|acunetix|burp|owasp|nmap|masscan|gobuster|dirbuster|arachni|w3af|skipfish|zap/i.test(userAgent)) {
-    elements.push('suspicious_user_agent');
-  }
-  
-  // Add other suspicious element checks here
-  return elements;
-}
-
-/**
  * Check authentication for protected routes
  */
 async function checkAuthentication(request: NextRequest): Promise<{ valid: boolean; payload?: any; error?: string }> {
@@ -385,24 +341,13 @@ function getSessionIdFromRequest(request: NextRequest): string | null {
 }
 
 /**
- * Helper function to extract client IP
+ * Authenticate request using the existing implementation
  */
-function getClientIp(request: NextRequest): string | null {
-  const xff = request.headers.get('x-forwarded-for');
-  if (xff) return xff.split(',')[0]?.trim() ?? null;
-  
-  const realIp = request.headers.get('x-real-ip');
-  if (realIp) return realIp.trim();
-  
-  const cf = request.headers.get('cf-connecting-ip');
-  if (cf) return cf.trim();
-  
-  return null;
-}
-
-/**
- * Helper function to extract user agent
- */
-function getUserAgent(request: NextRequest): string | null {
-  return request.headers.get('user-agent');
+async function authenticateRequest(request: NextRequest) {
+  // This is a placeholder that should use the existing authentication logic
+  // from the original middleware
+  return {
+    authenticated: false,
+    error: 'Authentication not implemented'
+  };
 }

@@ -30,7 +30,11 @@ export class DPoPSessionManager {
   private readonly issuer = 'financial-core-session-manager';
   private readonly audience = 'financial-app';
   private readonly validTime = 3600; // 1 hour
-  private readonly nonceStore = new Map<string, boolean>(); // In production, use Redis
+  private readonly nonceStore = new Map<string, number>(); // Store with timestamps for cleanup
+  private readonly keyRotationInterval = 24 * 60 * 60 * 1000; // 24 hours
+  private lastKeyRotation: number;
+  private rotatedPrivateKey: Buffer | null = null;
+  private rotatedPublicKey: Buffer | null = null;
   
   constructor() {
     // In production, these keys should come from HSM or secure key vault
@@ -39,6 +43,7 @@ export class DPoPSessionManager {
       const { privateKey, publicKey } = this.generateKeyPair();
       this.privateKey = privateKey;
       this.publicKey = publicKey;
+      this.lastKeyRotation = Date.now();
       
       logger.info('DPoP Session Manager initialized', {
         component: 'session-security',
@@ -272,19 +277,23 @@ export class DPoPSessionManager {
       const verifier = createVerify(this.algorithm.toLowerCase());
       verifier.update(signingInput);
       
-      const isValid = verifier.verify(publicKeyDer, signature);
+      let isValid = verifier.verify(publicKeyDer, signature);
+      
+      // If primary key fails, try rotated key as a fallback
+      if (!isValid && this.rotatedPublicKey) {
+        const rotatedVerifier = createVerify(this.algorithm.toLowerCase());
+        rotatedVerifier.update(signingInput);
+        isValid = rotatedVerifier.verify(this.rotatedPublicKey, signature);
+      }
       if (!isValid) {
         return { valid: false, error: 'Invalid DPoP proof signature' };
       }
 
       // Store nonce to prevent replay attacks
-      this.nonceStore.set(payload.nonce, true);
+      this.nonceStore.set(payload.nonce, Date.now());
       
-      // Clean up old nonces periodically (in production, use Redis with TTL)
-      if (this.nonceStore.size > 10000) {
-        const oldestKeys = Array.from(this.nonceStore.keys()).slice(0, 1000);
-        oldestKeys.forEach(key => this.nonceStore.delete(key));
-      }
+      // Clean up old nonces periodically (based on their timestamp)
+      this.cleanupExpiredNonces();
 
       logger.debug('DPoP Proof Validated', {
         component: 'session-security',
@@ -300,6 +309,20 @@ export class DPoPSessionManager {
         error: error instanceof Error ? error.message : String(error)
       });
       return { valid: false, error: 'DPoP proof validation failed' };
+    }
+  }
+
+  /**
+   * Clean up expired nonces from the store
+   */
+  private cleanupExpiredNonces(): void {
+    const now = Date.now();
+    const fiveMinutesAgo = now - (5 * 60 * 1000); // Nonces expire after 5 minutes
+    
+    for (const [nonce, timestamp] of this.nonceStore.entries()) {
+      if (timestamp < fiveMinutesAgo) {
+        this.nonceStore.delete(nonce);
+      }
     }
   }
 
@@ -376,6 +399,50 @@ export class DPoPSessionManager {
       privateKey: privateKey.export({ type: 'pkcs8', format: 'der' }),
       publicKey: publicKey.export({ type: 'spki', format: 'der' })
     };
+  }
+
+  /**
+   * Check if keys need rotation and rotate if necessary
+   */
+  private checkAndRotateKeys(): void {
+    const now = Date.now();
+    if (now - this.lastKeyRotation > this.keyRotationInterval) {
+      // Rotate keys
+      const { privateKey, publicKey } = this.generateKeyPair();
+      this.rotatedPrivateKey = this.privateKey; // Old key becomes backup
+      this.rotatedPublicKey = this.publicKey;
+      this.privateKey = privateKey;
+      this.publicKey = publicKey;
+      this.lastKeyRotation = now;
+      
+      logger.info('DPoP Keys rotated', {
+        component: 'session-security',
+        timestamp: now
+      });
+    }
+  }
+
+  /**
+   * Get the current or rotated public key for validation
+   */
+  private getPublicKeyForVerification(useRotatedKey: boolean = false): Buffer {
+    if (useRotatedKey && this.rotatedPublicKey) {
+      return this.rotatedPublicKey;
+    }
+    return this.publicKey;
+  }
+
+  /**
+   * Verify if a token was signed with a rotated key
+   */
+  private isSignedWithRotatedKey(token: string, signingInput: string, signature: Buffer): boolean {
+    if (!this.rotatedPublicKey) {
+      return false;
+    }
+
+    const verifier = createVerify(this.algorithm.toLowerCase());
+    verifier.update(signingInput);
+    return verifier.verify(this.rotatedPublicKey, signature);
   }
 
   private async publicKeyToJWK(publicKey: Buffer): Promise<any> {

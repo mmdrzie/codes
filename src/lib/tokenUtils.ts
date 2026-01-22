@@ -59,6 +59,8 @@ class KeyManager {
     privateKey: Uint8Array;
   } | null = null;
 
+  private currentTokenVersion: number = 2; // Updated to reflect current version
+
   private constructor() {}
 
   static getInstance(): KeyManager {
@@ -109,6 +111,10 @@ class KeyManager {
     }
     return this.classicalKeypair.publicKey;
   }
+
+  getCurrentTokenVersion(): number {
+    return this.currentTokenVersion;
+  }
 }
 
 const keyManager = KeyManager.getInstance();
@@ -127,7 +133,7 @@ export async function generateAccessToken(payload: Omit<AppJwtPayload, 'type' | 
     jti: `access_${crypto.randomUUID()}`,
     nonce: crypto.randomUUID(), // Nonce for replay protection
     deviceFingerprint, // Device binding
-    tokenVersion: 1, // For key rotation tracking
+    tokenVersion: keyManager.getCurrentTokenVersion(), // For key rotation tracking
   };
 
   // Create JWT with standard fields first
@@ -180,7 +186,7 @@ export async function generateRefreshToken(payload: Omit<AppJwtPayload, 'type' |
     jti: `refresh_${crypto.randomUUID()}`,
     nonce: crypto.randomUUID(), // Nonce for replay protection
     deviceFingerprint, // Device binding
-    tokenVersion: 1, // For key rotation tracking
+    tokenVersion: keyManager.getCurrentTokenVersion(), // For key rotation tracking
   };
 
   // Create JWT with standard fields first
@@ -421,6 +427,29 @@ export async function verifyAccessToken(token: string): Promise<AppJwtPayload | 
       }
     }
     
+    // Check token version to enforce key rotation validity
+    if (decodedPayload.tokenVersion !== keyManager.getCurrentTokenVersion()) {
+      logger.warn('Access token has obsolete version', { 
+        currentVersion: keyManager.getCurrentTokenVersion(),
+        tokenVersion: decodedPayload.tokenVersion,
+        userId: decodedPayload.userId 
+      });
+      await SecurityMonitor.logAuthFailure(
+        decodedPayload.userId,
+        { 
+          timestamp: new Date(),
+          metadata: { 
+            tokenType: 'access',
+            expectedVersion: keyManager.getCurrentTokenVersion(),
+            actualVersion: decodedPayload.tokenVersion,
+            check: 'version_validation' 
+          }
+        },
+        'Access token has obsolete version'
+      );
+      return null;
+    }
+
     // Check token freshness (ensure it wasn't issued too far in the past)
     const tokenAgeSeconds = Date.now() / 1000 - (decodedPayload.iat || 0);
     if (tokenAgeSeconds > ACCESS_TTL_SECONDS + 300) { // 5 min grace period
@@ -562,6 +591,29 @@ export async function verifyRefreshToken(token: string): Promise<{ valid: boolea
         'Invalid token type for refresh token'
       );
       return { valid: false, payload: null, error: 'Invalid token type' };
+    }
+
+    // Check token version to enforce key rotation validity
+    if (decodedPayload.tokenVersion !== keyManager.getCurrentTokenVersion()) {
+      logger.warn('Refresh token has obsolete version', { 
+        currentVersion: keyManager.getCurrentTokenVersion(),
+        tokenVersion: decodedPayload.tokenVersion,
+        userId: decodedPayload.userId 
+      });
+      await SecurityMonitor.logAuthFailure(
+        decodedPayload.userId,
+        { 
+          timestamp: new Date(),
+          metadata: { 
+            tokenType: 'refresh',
+            expectedVersion: keyManager.getCurrentTokenVersion(),
+            actualVersion: decodedPayload.tokenVersion,
+            check: 'version_validation' 
+          }
+        },
+        'Refresh token has obsolete version'
+      );
+      return { valid: false, payload: null, error: 'Token has obsolete version' };
     }
 
     // Check if token is blacklisted (revoked)
@@ -739,35 +791,32 @@ async function checkAccessTokenReplay(jti: string): Promise<boolean> {
   const key = `${ACCESS_TOKEN_USED_PREFIX}${jti}`;
   
   try {
-    // Use SET with NX (Not eXists) to atomically set the key only if it doesn't exist
-    // This prevents race conditions where multiple requests could pass the check
+    // Use GETDEL (get and delete in one atomic operation) to check and consume nonce atomically
+    // Or use Redis Lua script to atomically check existence and set if not exists
     const setResult = await redis.set(key, '1', {
       ex: ACCESS_TTL_SECONDS,  // Set expiration time
-      nx: true                 // Only set if key doesn't exist
+      nx: true                 // Only set if key doesn't exist (atomic check-and-set)
     });
     
-    // If setResult is true (or 'OK' in some cases), the key was set successfully
-    // If setResult is null, the key already existed (replay attack)
-    return setResult === null || setResult === false;
+    // If setResult is true (or 'OK' in some cases), the key was set successfully (first time seen)
+    // If setResult is null, the key already existed (replay attack detected)
+    const isReplay = setResult === null || setResult === false;
+    
+    if (isReplay) {
+      logger.warn('Access token replay attack detected via Redis', { jti });
+    }
+    
+    return isReplay;
   } catch (error) {
-    logger.error('Redis error in access token replay check', { error: (error as Error).message, jti });
-    // Fallback to in-memory tracking if Redis fails
-    return checkAccessTokenReplayInMemory(jti);
+    logger.error('Critical: Redis error in access token replay check - cannot guarantee security', { 
+      error: (error as Error).message, 
+      jti 
+    });
+    
+    // FAIL-CLOSE: If Redis is unavailable, we cannot safely verify tokens
+    // This prevents the system from falling back to less secure in-memory storage
+    throw new Error('Redis service is unavailable. Token replay protection cannot function.');
   }
-}
-
-// In-memory fallback for access token replay protection
-const usedAccessTokens = new Set<string>();
-
-function checkAccessTokenReplayInMemory(jti: string): boolean {
-  if (usedAccessTokens.has(jti)) {
-    return true;
-  }
-  
-  usedAccessTokens.add(jti);
-  // Clean up old tokens after the access token TTL
-  setTimeout(() => usedAccessTokens.delete(jti), ACCESS_TTL_SECONDS * 1000);
-  return false;
 }
 
 export function decodeTokenUnsafe(token: string): AppJwtPayload | null {

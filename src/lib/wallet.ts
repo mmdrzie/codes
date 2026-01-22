@@ -32,9 +32,9 @@ const NONCE_PREFIX = 'wallet_nonce:';
 const NONCE_EXPIRATION = 5 * 60; // 5 minutes in seconds
 
 // توابع export شده
-export async function generateNonce(address: string): Promise<NonceResult> {
+export async function generateNonce(address: string, chainId?: string): Promise<NonceResult> {
   const cleanAddress = address.toLowerCase().trim();
-  const nonce = Math.random().toString(36).substring(2) + Date.now().toString(36);
+  const nonce = crypto.randomBytes(32).toString('hex'); // Use CSPRNG
   const expiresAt = Date.now() + 5 * 60 * 1000; // 5 دقیقه
   
   // Store nonce in Redis with expiration
@@ -45,9 +45,14 @@ export async function generateNonce(address: string): Promise<NonceResult> {
     throw new Error('Failed to generate secure nonce');
   }
 
+  // Include a chain-ID or domain separator in signed messages to prevent replay across different chains
+  const message = chainId 
+    ? `Sign this message to authenticate on chain ${chainId}: ${nonce}`
+    : `Login to QuantumIQ\n\nAddress: ${cleanAddress}\nNonce: ${nonce}\nExpires: ${new Date(expiresAt).toISOString()}`;
+
   return {
     nonce,
-    message: `Login to QuantumIQ\n\nAddress: ${cleanAddress}\nNonce: ${nonce}\nExpires: ${new Date(expiresAt).toISOString()}`
+    message
   };
 }
 

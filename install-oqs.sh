@@ -23,4 +23,9 @@ cd ../..
 # Now install the Node.js bindings
 npm install --save --legacy-peer-deps @oqs/node
 
+if [ $? -ne 0 ]; then
+  echo "Error: Failed to install @oqs/node. Exiting.";
+  exit 1;
+fi
+
 echo "Installation complete!"

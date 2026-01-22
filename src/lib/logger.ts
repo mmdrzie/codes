@@ -1,7 +1,11 @@
-/**
- * سیستم Logging امن
- * جلوگیری از Log کردن اطلاعات حساس
- */
+/**\n * سیستم Logging امن با Rate Limiting\n * جلوگیری از Log کردن اطلاعات حساس و جلوگیری از Flooding\n */
+
+import { Redis } from '@upstash/redis';
+
+// Initialize Redis for log rate limiting
+const redis = process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN 
+  ? Redis.fromEnv() 
+  : null;
 
 // فیلدهای حساس که نباید log شوند
 const SENSITIVE_FIELDS = [
@@ -25,6 +29,126 @@ const SENSITIVE_FIELDS = [
   'privateKey',
   'private_key'
 ];
+
+// Log rate limiting configuration
+const LOG_RATE_LIMITS = {
+  PER_USER_PER_MINUTE: 100,  // Max 100 logs per user per minute
+  PER_IP_PER_MINUTE: 200,    // Max 200 logs per IP per minute
+  PER_ENDPOINT_PER_MINUTE: 50, // Max 50 logs per endpoint per minute
+};
+
+// Cache for tracking log counts in memory (fallback when Redis is unavailable)
+const logCountCache = new Map<string, { count: number; timestamp: number }>();
+
+/**
+ * Check if log should be rate limited
+ */
+async function checkLogRateLimit(logEntry: LogEntry): Promise<boolean> {
+  if (!process.env.LOG_RATE_LIMITING || process.env.LOG_RATE_LIMITING === 'false') {
+    return false; // Rate limiting disabled
+  }
+
+  const now = Date.now();
+  const minuteKey = Math.floor(now / 60000); // Current minute
+  
+  // Create identifiers for different rate limiting strategies
+  const identifiers = [];
+  
+  if (logEntry.userId) {
+    identifiers.push(`user:${logEntry.userId}:${minuteKey}`);
+  }
+  
+  if (logEntry.data?.ip) {
+    identifiers.push(`ip:${logEntry.data.ip}:${minuteKey}`);
+  }
+  
+  if (logEntry.data?.endpoint) {
+    identifiers.push(`endpoint:${logEntry.data.endpoint}:${minuteKey}`);
+  }
+  
+  // Check all applicable rate limits
+  for (const id of identifiers) {
+    let currentCount = 0;
+    
+    if (redis) {
+      try {
+        // Use Redis to track log counts
+        const key = `log_rate_limit:${id}`;
+        const count = await redis.incr(key);
+        
+        if (count === 1) {
+          // Set expiration for 2 minutes to clear old entries
+          await redis.expire(key, 120);
+        }
+        
+        // Determine limit based on identifier type
+        let limit = LOG_RATE_LIMITS.PER_USER_PER_MINUTE;
+        if (id.startsWith('ip:')) {
+          limit = LOG_RATE_LIMITS.PER_IP_PER_MINUTE;
+        } else if (id.startsWith('endpoint:')) {
+          limit = LOG_RATE_LIMITS.PER_ENDPOINT_PER_MINUTE;
+        }
+        
+        if (count > limit) {
+          return true; // Rate limit exceeded
+        }
+      } catch (error) {
+        // Fallback to in-memory cache if Redis fails
+        console.warn('Redis log rate limiting failed, using in-memory cache', error);
+        
+        // Check in-memory cache
+        if (logCountCache.has(id)) {
+          const cached = logCountCache.get(id)!;
+          if (cached.timestamp === minuteKey) {
+            if (cached.count >= LOG_RATE_LIMITS.PER_USER_PER_MINUTE) {
+              return true; // Rate limit exceeded
+            }
+            logCountCache.set(id, { count: cached.count + 1, timestamp: minuteKey });
+          } else {
+            logCountCache.set(id, { count: 1, timestamp: minuteKey });
+          }
+        } else {
+          logCountCache.set(id, { count: 1, timestamp: minuteKey });
+        }
+      }
+    } else {
+      // Use in-memory cache when Redis is not available
+      if (logCountCache.has(id)) {
+        const cached = logCountCache.get(id)!;
+        if (cached.timestamp === minuteKey) {
+          if (cached.count >= LOG_RATE_LIMITS.PER_USER_PER_MINUTE) {
+            return true; // Rate limit exceeded
+          }
+          logCountCache.set(id, { count: cached.count + 1, timestamp: minuteKey });
+        } else {
+          logCountCache.set(id, { count: 1, timestamp: minuteKey });
+        }
+      } else {
+        logCountCache.set(id, { count: 1, timestamp: minuteKey });
+      }
+    }
+  }
+  
+  return false; // Rate limit not exceeded
+}
+
+/**
+ * Aggregate similar logs to prevent flooding
+ */
+function shouldAggregateLog(entry: LogEntry): boolean {
+  // Don't aggregate high priority logs
+  if (entry.level === LogLevel.ERROR || entry.level === LogLevel.FATAL) {
+    return false;
+  }
+  
+  // Check if this is a repetitive log pattern
+  const logSignature = `${entry.level}-${entry.message}`;
+  const now = Date.now();
+  const thresholdMs = 30000; // 30 seconds threshold for similar logs
+  
+  // This is a simplified implementation - in production you'd want more sophisticated aggregation
+  return false; // For now, disable aggregation for clarity
+}
 
 // Level های Log
 export enum LogLevel {

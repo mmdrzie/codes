@@ -22,8 +22,8 @@ const SECURITY_CONFIG = {
     'Permissions-Policy': 'geolocation=(), microphone=(), camera=()',
   },
   
-  // CSP policy
-  CSP_POLICY: "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self' https://*.firebaseapis.com https://*.googleapis.com; frame-ancestors 'none';",
+  // CSP policy - removed unsafe-inline and unsafe-eval
+  CSP_POLICY: "default-src 'self'; script-src 'self'; style-src 'self' 'nonce-GENERATED_NONCE'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self' https://*.firebaseapis.com https://*.googleapis.com; frame-ancestors 'none';",
   
   // CSRF protection
   CSRF_HEADER_NAME: 'X-CSRF-Token',
@@ -69,10 +69,10 @@ export async function middleware(req: NextRequest) {
   const startTime = Date.now();
   const { pathname } = req.nextUrl;
 
-  // Apply global rate limiting to all routes
-  const rateLimitResponse = await applyRateLimiting(req);
-  if (rateLimitResponse) {
-    return rateLimitResponse;
+  // Apply initial rate limiting without userId
+  const initialRateLimitResponse = await applyRateLimiting(req, undefined);
+  if (initialRateLimitResponse) {
+    return initialRateLimitResponse;
   }
 
   // Block requests with suspicious patterns
@@ -132,22 +132,59 @@ export async function middleware(req: NextRequest) {
       timestamp: Date.now()
     };
 
-    // Validate session binding (IP/User-Agent consistency)
+    // Apply account-specific rate limiting after authentication
     if (authContext.userId) {
-      const isBindingValid = await validateSessionBinding(req, authContext.userId);
-      if (!isBindingValid) {
-        logger.warn('Session binding validation failed', {
-          userId: authContext.userId,
-          ip: getClientIp(req),
-          userAgent: getUserAgent(req)
-        });
+      const accountRateLimitResponse = await applyRateLimiting(req, authContext.userId);
+      if (accountRateLimitResponse) {
+        return accountRateLimitResponse;
+      }
+    }
 
-        // Clear session cookies and redirect
-        const response = NextResponse.redirect(new URL('/login', req.url));
-        response.cookies.delete('__session');
-        response.cookies.delete('refresh_token');
-        response.cookies.delete('session_id');
-        return response;
+    // Validate session binding (IP/User-Agent consistency) - ENFORCE strict validation
+    if (authContext.userId) {
+      // Extract session ID from request cookies or headers
+      const sessionId = getSessionIdFromRequest(req);
+      if (sessionId) {
+        const isBindingValid = await validateSessionBinding(
+          sessionId,
+          getClientIp(req) || 'unknown',
+          getUserAgent(req) || 'unknown'
+        );
+        
+        if (!isBindingValid) {
+          logger.warn('Session binding validation failed', {
+            userId: authContext.userId,
+            ip: getClientIp(req),
+            userAgent: getUserAgent(req),
+            sessionId
+          });
+
+          // Log security event
+          await SecurityMonitor.logEvent(
+            SecurityEvent.SESSION_HIJACK_ATTEMPT,
+            {
+              timestamp: new Date(),
+              userId: authContext.userId,
+              metadata: {
+                ip: getClientIp(req),
+                userAgent: getUserAgent(req),
+                sessionId,
+                validationType: 'binding_check'
+              }
+            },
+            'Session hijack attempt detected during binding validation'
+          );
+
+          // Clear session cookies and deny access
+          const response = NextResponse.json(
+            { error: 'Session validation failed', message: 'Invalid session binding' },
+            { status: 401 }
+          );
+          response.cookies.delete('__session');
+          response.cookies.delete('refresh_token');
+          response.cookies.delete('session_id');
+          return response;
+        }
       }
     }
   } else if (isPublicRoute(pathname)) {
@@ -328,6 +365,42 @@ export const config = {
     },
   ],
 };
+
+/**
+ * Helper function to extract session ID from request
+ */
+function getSessionIdFromRequest(request: NextRequest): string | null {
+  // Try to get session ID from cookies
+  const sessionIdFromCookie = request.cookies.get('session_id')?.value;
+  if (sessionIdFromCookie) {
+    return sessionIdFromCookie;
+  }
+  
+  // Try to get session ID from authorization header (if stored in JWT payload)
+  const authHeader = request.headers.get('Authorization');
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    const token = authHeader.substring(7);
+    try {
+      // Decode JWT to extract session ID if present
+      const base64Url = token.split('.')[1];
+      const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+      const payload = JSON.parse(atob(base64));
+      if (payload.sessionId) {
+        return payload.sessionId;
+      }
+    } catch (e) {
+      // If decoding fails, continue with other methods
+    }
+  }
+  
+  // Try to get session ID from custom header
+  const sessionIdFromHeader = request.headers.get('X-Session-ID');
+  if (sessionIdFromHeader) {
+    return sessionIdFromHeader;
+  }
+  
+  return null;
+}
 
 /**
  * Helper function to extract client IP

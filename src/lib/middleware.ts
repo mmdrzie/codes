@@ -130,12 +130,22 @@ async function validateDeviceBinding(request: NextRequest, expectedFingerprint: 
 }
 
 /**
- * Enhanced rate limiting middleware
+ * Enhanced rate limiting middleware with multi-layered protection
  */
 export async function applyRateLimiting(request: NextRequest, userId?: string) {
-  const identifier = getIdentifier(request, userId);
+  const clientIp = getClientIp(request);
+  const userAgent = request.headers.get('user-agent');
   const endpoint = request.nextUrl.pathname;
   
+  // Create multiple identifiers to prevent bypass
+  const ipIdentifier = `ip:${clientIp}`;
+  const userAgentIdentifier = `ua:${hashString(userAgent || 'unknown')}`;
+  const endpointIdentifier = `ep:${endpoint}`;
+  const combinedIdentifier = `${ipIdentifier}:${userAgentIdentifier}:${endpointIdentifier}`;
+  
+  // Also consider userId if available
+  const fullIdentifier = userId ? `${combinedIdentifier}:user:${userId}` : combinedIdentifier;
+
   // Determine rate limit type based on endpoint
   let rateLimitType: 'login' | 'register' | 'walletAuth' | 'api' | 'passwordReset' = 'api';
   
@@ -149,28 +159,51 @@ export async function applyRateLimiting(request: NextRequest, userId?: string) {
     rateLimitType = 'passwordReset';
   }
 
-  const rateLimitResult = await checkRateLimit(identifier, rateLimitType);
+  // Check multiple rate limits to prevent bypass
+  const checks = [
+    checkRateLimit(ipIdentifier, rateLimitType),           // IP-based limit
+    checkRateLimit(userAgentIdentifier, rateLimitType),    // User-agent based limit
+    checkRateLimit(combinedIdentifier, rateLimitType),     // Combined limit
+    checkRateLimit(fullIdentifier, rateLimitType)          // Full identifier limit
+  ];
 
-  if (!rateLimitResult.allowed) {
+  const results = await Promise.all(checks);
+  
+  // If any of the rate limits are exceeded, block the request
+  const blockedResult = results.find(result => !result.allowed);
+  if (blockedResult) {
     return NextResponse.json(
       {
-        error: rateLimitResult.message,
-        resetAt: rateLimitResult.resetAt,
-        retryAfter: Math.ceil((rateLimitResult.resetAt - Date.now()) / 1000)
+        error: blockedResult.message,
+        resetAt: blockedResult.resetAt,
+        retryAfter: Math.ceil((blockedResult.resetAt - Date.now()) / 1000)
       },
       {
         status: 429,
         headers: {
           'X-RateLimit-Limit': '100',
-          'X-RateLimit-Remaining': rateLimitResult.remaining.toString(),
-          'X-RateLimit-Reset': rateLimitResult.resetAt.toString(),
-          'Retry-After': Math.ceil((rateLimitResult.resetAt - Date.now()) / 1000).toString()
+          'X-RateLimit-Remaining': blockedResult.remaining.toString(),
+          'X-RateLimit-Reset': blockedResult.resetAt.toString(),
+          'Retry-After': Math.ceil((blockedResult.resetAt - Date.now()) / 1000).toString()
         }
       }
     );
   }
 
   return null; // Rate limit passed
+}
+
+/**
+ * Helper function to hash strings for consistent identifiers
+ */
+function hashString(str: string): string {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    const char = str.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash |= 0; // Convert to 32bit integer
+  }
+  return Math.abs(hash).toString(36);
 }
 
 /**

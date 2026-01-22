@@ -5,6 +5,8 @@ import { Redis } from '@upstash/redis';
 import crypto from 'crypto';
 import { logger } from './logger';
 import { SecurityMonitor } from './security-monitoring';
+import { siemService } from './siem-integration';
+import { SecurityEventType } from './security-monitoring';
 
 // ✅ Validation برای JWT secret
 const getJwtSecret = (): string => {
@@ -280,12 +282,12 @@ export async function validateSessionBinding(
       sessionMemory.set(sessionId, { meta: sessionData, expiresAt });
     }
 
-    // Validate IP and User-Agent consistency with ENFORCED strict security checks
+    // ENFORCE strict security: Validate IP and User-Agent consistency
     const isIpConsistent = sessionData.ipAddress && 
                           (currentIp === sessionData.ipAddress);
     
     const isUserAgentConsistent = sessionData.userAgent && 
-                                 currentUserAgent === sessionData.userAgent;
+                                   currentUserAgent === sessionData.userAgent;
     
     // Enhanced security: Check for suspicious patterns
     const isIpSuspicious = sessionData.ipAddress && 
@@ -323,13 +325,19 @@ export async function validateSessionBinding(
       });
       
       // Emit security event for suspicious IP change
-      await siemService.emitGeoIPAnomaly(
-        currentIp,
-        currentUserAgent,
-        sessionData.userId,
-        'session_validation',
-        sessionData.ipAddress,
-        currentIp
+      await SecurityMonitor.logEvent(
+        SecurityEventType.GEO_IP_ANOMALY,
+        { 
+          timestamp: new Date(),
+          userId: sessionData.userId,
+          metadata: { 
+            originalIp: sessionData.ipAddress,
+            currentIp,
+            sessionId,
+            validationType: 'session_binding'
+          }
+        },
+        'Geographic IP anomaly detected in session validation'
       );
     }
     
@@ -342,27 +350,24 @@ export async function validateSessionBinding(
       });
       
       // Emit security event for suspicious User-Agent change
-      await siemService.emitSecurityEvent({
-        event_type: SecurityEventType.DEVICE_MISMATCH,
-        severity: 'high',
-        ip_address: currentIp,
-        user_agent: currentUserAgent,
-        user_id: sessionData.userId,
-        session_id: sessionId,
-        route: 'session_validation',
-        outcome: 'detected',
-        source: 'session',
-        details: {
-          original_user_agent: sessionData.userAgent,
-          current_user_agent: currentUserAgent
-        }
-      });
+      await SecurityMonitor.logEvent(
+        SecurityEventType.DEVICE_MISMATCH,
+        { 
+          timestamp: new Date(),
+          userId: sessionData.userId,
+          metadata: { 
+            originalUserAgent: sessionData.userAgent,
+            currentUserAgent,
+            sessionId,
+            validationType: 'session_binding'
+          }
+        },
+        'Device mismatch detected in session validation'
+      );
     }
 
-    // For high security applications, fail on binding inconsistencies
-    // For moderate security, allow with warning (current behavior)
-    // Returning false will enforce strict binding
-    const STRICT_SESSION_BINDING = process.env.STRICT_SESSION_BINDING !== 'false'; // Default to true now
+    // ENFORCE strict session binding - FAIL if bindings don't match
+    const STRICT_SESSION_BINDING = process.env.STRICT_SESSION_BINDING !== 'false'; // Default to true
     if (STRICT_SESSION_BINDING && (!isIpConsistent || !isUserAgentConsistent)) {
       logger.warn('Session binding validation failed - access denied due to strict mode', { 
         sessionId, 
@@ -372,41 +377,45 @@ export async function validateSessionBinding(
       });
       
       // Emit security event for binding violation
-      await siemService.emitSecurityEvent({
-        event_type: SecurityEventType.SESSION_HIJACK_ATTEMPT,
-        severity: 'critical',
-        ip_address: currentIp,
-        user_agent: currentUserAgent,
-        user_id: sessionData.userId,
-        session_id: sessionId,
-        route: 'session_validation',
-        outcome: 'blocked',
-        source: 'session',
-        details: {
-          binding_violation: true,
-          ip_consistent: isIpConsistent,
-          ua_consistent: isUserAgentConsistent
-        }
-      });
+      await SecurityMonitor.logEvent(
+        SecurityEventType.SESSION_HIJACK_ATTEMPT,
+        { 
+          timestamp: new Date(),
+          userId: sessionData.userId,
+          metadata: { 
+            sessionId,
+            validationType: 'session_binding',
+            ip_consistent: isIpConsistent,
+            ua_consistent: isUserAgentConsistent,
+            current_ip: currentIp,
+            current_ua: currentUserAgent,
+            original_ip: sessionData.ipAddress,
+            original_ua: sessionData.userAgent
+          }
+        },
+        'Potential session hijack attempt detected'
+      );
       
       return false;
     }
 
-    // Still return true to allow access but log inconsistencies, but add a security enhancement
-    // to track suspicious patterns over time
-    if (!isIpConsistent || !isUserAgentConsistent) {
-      logger.info('Session binding inconsistency detected but allowed due to non-strict mode', { 
-        sessionId, 
+    // Log successful validation
+    await SecurityMonitor.logEvent(
+      SecurityEventType.SESSION_VALIDATED,
+      { 
+        timestamp: new Date(),
         userId: sessionData.userId,
-        isIpConsistent,
-        isUserAgentConsistent
-      });
-      
-      // Optional: Implement pattern detection for suspicious access patterns
-      // This could trigger additional security measures if patterns repeat
-    }
+        metadata: { 
+          sessionId,
+          validationType: 'session_binding',
+          ip_consistent: isIpConsistent,
+          ua_consistent: isUserAgentConsistent
+        }
+      },
+      'Session binding validation passed'
+    );
 
-    return true; // Allow access but log inconsistencies
+    return true;
   } catch (error) {
     logger.error('Session binding validation error', { 
       error: (error as Error).message, 

@@ -95,16 +95,49 @@ export class HardenedAuthService {
   }
 
   /**
-   * Verify and consume nonce to prevent replay attacks
+   * Verify and consume nonce to prevent replay attacks using atomic operation
    */
   static async verifyAndConsumeNonce(identifier: string, providedNonce: string): Promise<boolean> {
     const key = `nonce:${identifier}`;
     
     try {
-      // Get and delete nonce atomically
-      const storedNonce = await redis.get(key);
+      // Use Lua script to atomically get and delete nonce with verification
+      const luaScript = `
+        local key = KEYS[1]
+        local expected_nonce = ARGV[1]
+        local stored_nonce = redis.call('GET', key)
+        
+        if not stored_nonce then
+          return 0  -- Nonce does not exist
+        end
+        
+        if stored_nonce == expected_nonce then
+          redis.call('DEL', key)
+          return 1  -- Success: nonce matched and deleted
+        else
+          return 0  -- Failure: nonce did not match
+        end
+      `;
       
-      if (!storedNonce || storedNonce !== providedNonce) {
+      // Execute atomic operation
+      const result = await redis.eval(luaScript, [key], [providedNonce]);
+      
+      if (result === 1) {
+        // Log successful nonce consumption
+        await SecurityMonitor.logEvent(
+          SecurityEvent.NONCE_CONSUMED,
+          { 
+            timestamp: new Date(),
+            metadata: { 
+              identifier,
+              nonceHash: crypto.createHash('sha256').update(providedNonce).digest('hex')
+            }
+          },
+          'Nonce successfully consumed atomically'
+        );
+        
+        return true;
+      } else {
         // Log potential replay attack
         await SecurityMonitor.logEvent(
           SecurityEvent.REPLAY_ATTEMPT,
@@ -113,7 +146,7 @@ export class HardenedAuthService {
             metadata: { 
               identifier,
               providedNonceHash: crypto.createHash('sha256').update(providedNonce).digest('hex'),
-              expectedNonceExists: !!storedNonce
+              expectedNonceExists: result === 0
             }
           },
           'Nonce verification failed - potential replay attack'
@@ -121,24 +154,6 @@ export class HardenedAuthService {
         
         return false;
       }
-      
-      // Delete the nonce to prevent reuse
-      await redis.del(key);
-      
-      // Log successful nonce consumption
-      await SecurityMonitor.logEvent(
-        SecurityEvent.NONCE_CONSUMED,
-        { 
-          timestamp: new Date(),
-          metadata: { 
-            identifier,
-            nonceHash: crypto.createHash('sha256').update(providedNonce).digest('hex')
-          }
-        },
-        'Nonce successfully consumed'
-      );
-      
-      return true;
     } catch (error) {
       logger.error('Nonce verification failed', { error: (error as Error).message });
       await SecurityMonitor.logEvent(

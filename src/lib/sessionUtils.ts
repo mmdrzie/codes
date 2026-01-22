@@ -240,7 +240,7 @@ export async function revokeUserSessions(user: SessionUser): Promise<void> {
   // server-side revocation با blacklist مدیریت می‌شود
 }
 
-// ✅ Enhanced session validation with binding checks
+// ✅ Enhanced session validation with strict binding checks to IP and User-Agent
 export async function validateSessionBinding(
   sessionId: string,
   currentIp: string,
@@ -266,7 +266,57 @@ export async function validateSessionBinding(
       return false;
     }
 
-    // Update last access info
+    // ENFORCE strict security: Validate IP and User-Agent consistency IMMEDIATELY
+    const isIpConsistent = sessionData.ipAddress && 
+                          (currentIp === sessionData.ipAddress);
+    
+    const isUserAgentConsistent = sessionData.userAgent && 
+                                   currentUserAgent === sessionData.userAgent;
+
+    // IMMEDIATELY INVALIDATE session if bindings don't match
+    if (!isIpConsistent || !isUserAgentConsistent) {
+      logger.warn('Session binding validation failed - IMMEDIATE INVALIDATION triggered', { 
+        sessionId, 
+        userId: sessionData.userId,
+        isIpConsistent,
+        isUserAgentConsistent,
+        originalIp: sessionData.ipAddress,
+        currentIp,
+        originalUserAgent: sessionData.userAgent,
+        currentUserAgent
+      });
+      
+      // IMMEDIATELY invalidate the session by deleting it
+      if (process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN) {
+        await redis.del(`${SESSION_PREFIX}${sessionId}`);
+      } else {
+        sessionMemory.delete(sessionId);
+      }
+      
+      // Emit security event for binding violation and session hijacking attempt
+      await SecurityMonitor.logEvent(
+        SecurityEventType.SESSION_HIJACK_ATTEMPT,
+        { 
+          timestamp: new Date(),
+          userId: sessionData.userId,
+          metadata: { 
+            sessionId,
+            validationType: 'session_binding',
+            ip_consistent: isIpConsistent,
+            ua_consistent: isUserAgentConsistent,
+            current_ip: currentIp,
+            current_ua: currentUserAgent,
+            original_ip: sessionData.ipAddress,
+            original_ua: sessionData.userAgent
+          }
+        },
+        'Session hijack attempt detected - session invalidated'
+      );
+      
+      return false;
+    }
+
+    // Update last access info only if session is valid
     sessionData.lastAccessed = Date.now();
     sessionData.lastAccessIp = currentIp;
     sessionData.lastAccessUserAgent = currentUserAgent;
@@ -282,38 +332,13 @@ export async function validateSessionBinding(
       sessionMemory.set(sessionId, { meta: sessionData, expiresAt });
     }
 
-    // ENFORCE strict security: Validate IP and User-Agent consistency
-    const isIpConsistent = sessionData.ipAddress && 
-                          (currentIp === sessionData.ipAddress);
-    
-    const isUserAgentConsistent = sessionData.userAgent && 
-                                   currentUserAgent === sessionData.userAgent;
-    
-    // Enhanced security: Check for suspicious patterns
+    // Enhanced security: Check for suspicious patterns even when consistent
     const isIpSuspicious = sessionData.ipAddress && 
                           currentIp !== sessionData.ipAddress &&
                           !currentIp.startsWith(sessionData.ipAddress.split(':')[0]);
     
     const isUserAgentSuspicious = sessionData.userAgent && 
                                  !currentUserAgent.includes(sessionData.userAgent.split(' ')[0]);
-
-    if (!isIpConsistent) {
-      logger.warn('IP inconsistency detected', { 
-        sessionId, 
-        originalIp: sessionData.ipAddress, 
-        currentIp,
-        userId: sessionData.userId
-      });
-    }
-
-    if (!isUserAgentConsistent) {
-      logger.warn('User-Agent inconsistency detected', { 
-        sessionId, 
-        originalUserAgent: sessionData.userAgent, 
-        currentUserAgent,
-        userId: sessionData.userId
-      });
-    }
 
     // Enhanced security: Detect and log suspicious patterns
     if (isIpSuspicious) {
@@ -364,39 +389,6 @@ export async function validateSessionBinding(
         },
         'Device mismatch detected in session validation'
       );
-    }
-
-    // ENFORCE strict session binding - FAIL if bindings don't match
-    const STRICT_SESSION_BINDING = process.env.STRICT_SESSION_BINDING !== 'false'; // Default to true
-    if (STRICT_SESSION_BINDING && (!isIpConsistent || !isUserAgentConsistent)) {
-      logger.warn('Session binding validation failed - access denied due to strict mode', { 
-        sessionId, 
-        userId: sessionData.userId,
-        isIpConsistent,
-        isUserAgentConsistent
-      });
-      
-      // Emit security event for binding violation
-      await SecurityMonitor.logEvent(
-        SecurityEventType.SESSION_HIJACK_ATTEMPT,
-        { 
-          timestamp: new Date(),
-          userId: sessionData.userId,
-          metadata: { 
-            sessionId,
-            validationType: 'session_binding',
-            ip_consistent: isIpConsistent,
-            ua_consistent: isUserAgentConsistent,
-            current_ip: currentIp,
-            current_ua: currentUserAgent,
-            original_ip: sessionData.ipAddress,
-            original_ua: sessionData.userAgent
-          }
-        },
-        'Potential session hijack attempt detected'
-      );
-      
-      return false;
     }
 
     // Log successful validation

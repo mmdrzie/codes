@@ -278,7 +278,7 @@ export class PQCryptoService {
   }
 
   /**
-   * Verify a hybrid signature
+   * Verify a hybrid signature - ENFORCES both classical AND post-quantum verification
    */
   static async verifyHybridSignature(
     message: Uint8Array,
@@ -317,7 +317,7 @@ export class PQCryptoService {
       const pqSignature = signature.slice(0, pqSignatureEnd);
       const classicalSignature = signature.slice(pqSignatureEnd);
       
-      // Verify classical signature
+      // Verify classical signature - ENFORCE this check
       let classicalValid = false;
       try {
         const ed25519Key = crypto.createPublicKey({
@@ -329,15 +329,10 @@ export class PQCryptoService {
         classicalValid = crypto.verify(null, message, ed25519Key, classicalSignature);
       } catch (classicalError) {
         logger.error('Classical signature verification error', { error: (classicalError as Error).message });
-        return false;
+        classicalValid = false;
       }
       
-      if (!classicalValid) {
-        logger.warn('Classical signature verification failed');
-        return false;
-      }
-      
-      // Verify PQ signature
+      // Verify PQ signature - ENFORCE this check
       // Use real liboqs for Dilithium signature verification
       const sig = new oqsModule.Signature('dilithium3');
       
@@ -351,39 +346,62 @@ export class PQCryptoService {
       
       sig.free(); // Free resources
       
+      // ENFORCE both signatures must be valid - LOGICAL AND condition
       const isValid = classicalValid && pqValid;
       
-      // Monitor the signature verification
-      if (isValid) {
-        SecurityMonitor.logEvent(
-          SecurityEvent.AUTH_SUCCESS,
-          { 
-            timestamp: new Date(),
-            metadata: { 
-              signatureType: 'hybrid', 
-              isValid,
-              pq_alg: 'dilithium3',
-              classical_alg: 'ed25519',
-              is_real_oqs: isOqsAvailable
-            }
-          },
-          `Hybrid signature verification: ${isValid ? 'valid' : 'invalid'}`
-        );
-      } else {
+      // CRITICAL: If either signature fails, reject the entire verification
+      if (!classicalValid) {
+        logger.warn('Classical signature verification failed');
         SecurityMonitor.logPqSignatureInvalid(
           { 
             timestamp: new Date(),
             metadata: { 
               signatureType: 'hybrid', 
-              error: 'verification_failed',
+              error: 'classical_verification_failed',
               classical_valid: classicalValid,
               pq_valid: pqValid,
               is_real_oqs: isOqsAvailable
             }
           },
-          'Hybrid signature verification failed'
+          'Classical signature verification failed'
         );
+        return false; // FAIL if classical signature fails
       }
+      
+      if (!pqValid) {
+        logger.warn('Post-quantum signature verification failed');
+        SecurityMonitor.logPqSignatureInvalid(
+          { 
+            timestamp: new Date(),
+            metadata: { 
+              signatureType: 'hybrid', 
+              error: 'pq_verification_failed',
+              classical_valid: classicalValid,
+              pq_valid: pqValid,
+              is_real_oqs: isOqsAvailable
+            }
+          },
+          'Post-quantum signature verification failed'
+        );
+        return false; // FAIL if PQ signature fails
+      }
+      
+      // Only reach here if BOTH signatures are valid
+      // Monitor the signature verification
+      SecurityMonitor.logEvent(
+        SecurityEvent.AUTH_SUCCESS,
+        { 
+          timestamp: new Date(),
+          metadata: { 
+            signatureType: 'hybrid', 
+            isValid,
+            pq_alg: 'dilithium3',
+            classical_alg: 'ed25519',
+            is_real_oqs: isOqsAvailable
+          }
+        },
+        `Hybrid signature verification: ${isValid ? 'valid' : 'invalid'}`
+      );
       
       return isValid;
     } catch (error) {

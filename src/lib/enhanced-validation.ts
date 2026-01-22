@@ -1,26 +1,15 @@
-// src/lib/validation.ts
 import { z } from 'zod';
 
-const PASSWORD_MIN = 12;
-const PASSWORD_MAX = 128;
-const EMAIL_MAX = 255;
-
-const COMMON_PASSWORDS = new Set(['password', '123456', '123456789', 'qwerty', 'admin', 'letmein', 'welcome', 'monkey', '1234567890']);
-
-function isStrongPassword(password: string): boolean {
-  if (COMMON_PASSWORDS.has(password.toLowerCase())) return false;
-  return /[a-z]/.test(password) && /[A-Z]/.test(password) && /\d/.test(password) && /[^A-Za-z0-9]/.test(password);
-}
+// Enhanced validation with allow-lists and comprehensive input validation
+const COMMON_PASSWORDS = new Set([
+  'password', '123456', '123456789', 'qwerty', 'admin', 'letmein', 'welcome', 
+  'monkey', '1234567890', 'password123', 'admin123', 'letmein123'
+]);
 
 const DISPOSABLE_DOMAINS = new Set([
   'tempmail.com', '10minutemail.com', 'guerrillamail.com', 'guerrillamail.net',
   'mailinator.com', 'throwaway.email', 'yopmail.com', 'sharklasers.com', 'trashmail.com'
 ]);
-
-function isNotDisposableEmail(email: string): boolean {
-  const domain = email.split('@')[1]?.toLowerCase();
-  return !!domain && !DISPOSABLE_DOMAINS.has(domain);
-}
 
 // Sanitization function to prevent injection attacks
 function sanitizeInput(input: string): string {
@@ -33,31 +22,73 @@ function sanitizeInput(input: string): string {
     .trim();
 }
 
-// Email schema with strict validation
+// Strong password validation
+function isStrongPassword(password: string): boolean {
+  if (COMMON_PASSWORDS.has(password.toLowerCase())) return false;
+  return /[a-z]/.test(password) && 
+         /[A-Z]/.test(password) && 
+         /\d/.test(password) && 
+         /[^A-Za-z0-9]/.test(password) &&
+         password.length >= 12; // Minimum 12 characters
+}
+
+// Disposable email validation
+function isNotDisposableEmail(email: string): boolean {
+  const domain = email.split('@')[1]?.toLowerCase();
+  return !!domain && !DISPOSABLE_DOMAINS.has(domain);
+}
+
+// Whitelist of valid country codes
+const VALID_COUNTRY_CODES = new Set([
+  'US', 'CA', 'GB', 'DE', 'FR', 'JP', 'AU', 'IN', 'BR', 'CN', 'RU', 'MX', 'IT', 'ES', 'NL'
+]);
+
+// Enhanced email schema with strict validation
 export const emailSchema = z.string()
   .email({ message: 'Invalid email format' })
-  .max(EMAIL_MAX, { message: 'Email too long' })
+  .max(255, { message: 'Email too long' })
   .transform((v: string) => {
     const sanitized = sanitizeInput(v);
     return sanitized.trim().toLowerCase();
   })
   .refine(isNotDisposableEmail, { message: 'Disposable email addresses are not allowed' });
 
-// Password schema with strict validation
+// Enhanced password schema with strict validation
 export const passwordSchema = z.string()
-  .min(PASSWORD_MIN, { message: `Password must be at least ${PASSWORD_MIN} characters` })
-  .max(PASSWORD_MAX, { message: `Password must be no more than ${PASSWORD_MAX} characters` })
+  .min(12, { message: 'Password must be at least 12 characters' })
+  .max(128, { message: 'Password must be no more than 128 characters' })
   .refine(isStrongPassword, {
-    message: 'Password must contain uppercase, lowercase, number and special character',
+    message: 'Password must contain uppercase, lowercase, number, special character, and be at least 12 characters'
   });
 
-// Login schema with strict validation
+// Whitelist of valid action types for API requests
+const VALID_API_ACTIONS = new Set([
+  'transfer', 'deposit', 'withdraw', 'balance', 'transaction_history', 'profile_update', 'settings_change'
+]);
+
+// Enhanced API request schema with allow-list validation
+export const apiRequestSchema = z.object({
+  action: z.string()
+    .min(1, { message: 'Action is required' })
+    .max(100, { message: 'Action too long' })
+    .refine(val => VALID_API_ACTIONS.has(val), { 
+      message: `Invalid action. Valid actions are: ${Array.from(VALID_API_ACTIONS).join(', ')}` 
+    }),
+  data: z.record(z.unknown()).optional(), // Allow flexible data structure but validate it
+  timestamp: z.number()
+    .gte(Date.now() - 5 * 60 * 1000, { message: 'Request timestamp too old (max 5 minutes)' }) // 5 min window
+    .lte(Date.now() + 5 * 60 * 1000, { message: 'Request timestamp in future' }),
+  // Add signature for request authenticity
+  signature: z.string().optional()
+}).strict(); // Reject unknown fields
+
+// Enhanced login schema with strict validation
 export const loginSchema = z.object({
   email: emailSchema,
   password: z.string().min(1, { message: 'Password is required' }),
 }).strict(); // Strict mode rejects unknown fields
 
-// Registration schema with strict validation
+// Enhanced registration schema with strict validation
 export const registerSchema = z.object({
   email: emailSchema,
   password: passwordSchema,
@@ -70,13 +101,18 @@ export const registerSchema = z.object({
     .min(1, { message: 'Last name is required' })
     .max(50, { message: 'Last name too long' })
     .regex(/^[a-zA-Z\s\-']+$/, { message: 'Last name contains invalid characters' }),
+  country: z.string()
+    .length(2, { message: 'Country code must be 2 letters' })
+    .refine(code => VALID_COUNTRY_CODES.has(code.toUpperCase()), { 
+      message: `Invalid country code. Valid codes are: ${Array.from(VALID_COUNTRY_CODES).join(', ')}` 
+    }),
 }).strict() // Reject unknown fields
 .refine((data) => data.password === data.confirmPassword, {
   message: "Passwords don't match",
   path: ['confirmPassword'],
 });
 
-// Wallet authentication schema with strict validation
+// Enhanced wallet authentication schema with strict validation
 export const walletAuthSchema = z.object({
   address: z.string()
     .regex(/^0x[a-fA-F0-9]{40}$/, { message: 'Invalid Ethereum address format' })
@@ -93,12 +129,12 @@ export const walletAuthSchema = z.object({
     .optional(),
 }).strict(); // Reject unknown fields
 
-// Password reset request schema
+// Enhanced password reset request schema
 export const passwordResetRequestSchema = z.object({
   email: emailSchema,
 }).strict(); // Reject unknown fields
 
-// Password reset schema
+// Enhanced password reset schema
 export const passwordResetSchema = z.object({
   token: z.string()
     .min(20, { message: 'Token must be at least 20 characters' })
@@ -111,7 +147,7 @@ export const passwordResetSchema = z.object({
   path: ['confirmPassword'],
 });
 
-// Change password schema
+// Enhanced change password schema
 export const changePasswordSchema = z.object({
   currentPassword: z.string().min(1, { message: 'Current password is required' }),
   newPassword: passwordSchema,
@@ -126,7 +162,7 @@ export const changePasswordSchema = z.object({
   path: ['newPassword'],
 });
 
-// Tenant schema for multi-tenant applications
+// Enhanced tenant schema for multi-tenant applications
 export const tenantSchema = z.object({
   tenantId: z.string()
     .min(3, { message: 'Tenant ID must be at least 3 characters' })
@@ -142,31 +178,7 @@ export const tenantSchema = z.object({
   }).default('free'),
 }).strict(); // Reject unknown fields
 
-// API request schema for general use
-export const apiRequestSchema = z.object({
-  action: z.string()
-    .min(1, { message: 'Action is required' })
-    .max(100, { message: 'Action too long' }),
-  data: z.record(z.unknown()).optional(), // Allow flexible data structure but validate it
-  timestamp: z.number()
-    .gte(Date.now() - 5 * 60 * 1000, { message: 'Request timestamp too old (max 5 minutes)' }) // 5 min window
-    .lte(Date.now() + 5 * 60 * 1000, { message: 'Request timestamp in future' }),
-}).strict(); // Reject unknown fields
-
-// Rate limiting schema
-export const rateLimitSchema = z.object({
-  identifier: z.string()
-    .min(1, { message: 'Identifier is required' })
-    .max(255, { message: 'Identifier too long' }),
-  action: z.string()
-    .min(1, { message: 'Action is required' })
-    .max(100, { message: 'Action too long' }),
-  windowMs: z.number()
-    .gte(1000, { message: 'Window must be at least 1 second' })
-    .lte(3600000, { message: 'Window must be no more than 1 hour' }),
-}).strict(); // Reject unknown fields
-
-// SIWE (Sign-In With Ethereum) message schema
+// Enhanced SIWE (Sign-In With Ethereum) message schema with allow-list validation
 export const siweMessageSchema = z.object({
   domain: z.string()
     .min(1, { message: 'Domain is required' })
@@ -204,14 +216,45 @@ export const siweMessageSchema = z.object({
   resources: z.array(z.string().url()).max(10).optional(),
 }).strict(); // Reject unknown fields
 
-/**
- * Generic validation function with strict error handling
- */
+// Transaction-specific validation schemas
+const VALID_TRANSACTION_TYPES = new Set(['transfer', 'payment', 'withdrawal', 'deposit']);
+const VALID_CURRENCIES = new Set(['USD', 'EUR', 'GBP', 'BTC', 'ETH', 'USDC', 'USDT']);
+
+export const transactionSchema = z.object({
+  type: z.string()
+    .refine(val => VALID_TRANSACTION_TYPES.has(val), { 
+      message: `Invalid transaction type. Valid types are: ${Array.from(VALID_TRANSACTION_TYPES).join(', ')}` 
+    }),
+  amount: z.number()
+    .positive({ message: 'Amount must be positive' })
+    .max(10000000, { message: 'Transaction amount too large' }), // Max $10M equivalent
+  currency: z.string()
+    .refine(val => VALID_CURRENCIES.has(val.toUpperCase()), { 
+      message: `Invalid currency. Valid currencies are: ${Array.from(VALID_CURRENCIES).join(', ')}` 
+    }),
+  recipient: z.string()
+    .min(5, { message: 'Recipient address too short' })
+    .max(100, { message: 'Recipient address too long' }),
+  description: z.string()
+    .max(500, { message: 'Description too long' })
+    .transform(sanitizeInput) // Sanitize description
+    .optional(),
+}).strict();
+
+// Generic validation function with strict error handling and sanitization
 export function validateAndParse<T extends z.ZodRawShape>(
   schema: z.ZodObject<T>, 
   data: unknown
 ): { success: true; data: z.infer<typeof schema> } | { success: false; errors: string[] } {
-  const result = schema.safeParse(data);
+  // Deep clone and sanitize the data before validation
+  const sanitizedData = JSON.parse(JSON.stringify(data), (key, value) => {
+    if (typeof value === 'string') {
+      return sanitizeInput(value);
+    }
+    return value;
+  });
+  
+  const result = schema.safeParse(sanitizedData);
   
   if (result.success) {
     return { success: true, data: result.data };
@@ -227,10 +270,8 @@ export function validateAndParse<T extends z.ZodRawShape>(
   return { success: false, errors };
 }
 
-/**
- * Validate any data against a schema with strict unknown field rejection
- */
-export function strictValidate<T extends z.ZodRawShape>(
+// Enhanced validation function with allow-lists
+export function strictValidateWithAllowLists<T extends z.ZodRawShape>(
   schema: z.ZodObject<T>, 
   data: unknown
 ): { valid: boolean; data?: z.infer<typeof schema>; errors?: string[] } {
@@ -252,8 +293,16 @@ export function strictValidate<T extends z.ZodRawShape>(
       };
     }
     
+    // Deep clone and sanitize the data before validation
+    const sanitizedData = JSON.parse(JSON.stringify(data), (key, value) => {
+      if (typeof value === 'string') {
+        return sanitizeInput(value);
+      }
+      return value;
+    });
+    
     // Parse with strict validation
-    const parsed = schema.parse(data);
+    const parsed = schema.parse(sanitizedData);
     return { valid: true, data: parsed };
   } catch (error: any) {
     if (error instanceof z.ZodError) {
@@ -274,3 +323,4 @@ export type ChangePasswordInput = z.infer<typeof changePasswordSchema>;
 export type TenantInput = z.infer<typeof tenantSchema>;
 export type ApiRequestInput = z.infer<typeof apiRequestSchema>;
 export type SiweMessageInput = z.infer<typeof siweMessageSchema>;
+export type TransactionInput = z.infer<typeof transactionSchema>;

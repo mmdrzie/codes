@@ -134,7 +134,7 @@ export async function generateAndStoreNonce(address: string): Promise<NonceRespo
   return generateAndStoreNonceWithMemory(address);
 }
 
-// ✅ **Redis-based nonce verification**
+// ✅ **Redis-based nonce verification with atomic Lua script for race condition prevention**
 async function verifyAndConsumeNonceWithRedis(address: string, nonce: string): Promise<boolean> {
   try {
     const { Redis } = await import('@upstash/redis');
@@ -147,39 +147,62 @@ async function verifyAndConsumeNonceWithRedis(address: string, nonce: string): P
     const lowerAddress = address.toLowerCase();
     const nonceKey = `nonce:${lowerAddress}`;
     
-    // ✅ Atomic operation: get و delete
-    const multi = redis.multi();
-    multi.get(nonceKey);
-    multi.del(nonceKey);
+    // Use atomic Lua script to get and delete nonce in one operation to prevent race conditions
+    const luaScript = `
+      local key = KEYS[1]
+      local nonce_to_verify = ARGV[1]
+      local address_to_verify = ARGV[2]
+      
+      local stored_data = redis.call('GET', key)
+      if not stored_data then
+        return cjson.encode({success = false, message = 'Nonce not found'})
+      end
+      
+      local parsed_data = cjson.decode(stored_data)
+      
+      -- Verify nonce and address match
+      if parsed_data.nonce ~= nonce_to_verify or parsed_data.address ~= address_to_verify then
+        return cjson.encode({success = false, message = 'Nonce or address mismatch'})
+      end
+      
+      -- Check expiration
+      local current_time = tonumber(ARGV[3])
+      local nonce_expires_at = tonumber(parsed_data.expiresAt)
+      if current_time > nonce_expires_at then
+        -- Delete expired nonce and return failure
+        redis.call('DEL', key)
+        return cjson.encode({success = false, message = 'Nonce expired'})
+      end
+      
+      -- Additional checks
+      local created_at = tonumber(parsed_data.createdAt)
+      if current_time - created_at < 1000 then  -- At least 1 second must have passed since creation
+        return cjson.encode({success = false, message = 'Nonce too recent'})
+      end
+      
+      if created_at < (current_time - (24 * 60 * 60 * 1000)) then  -- Created less than 24 hours ago
+        return cjson.encode({success = false, message = 'Nonce too old'})
+      end
+      
+      -- If all checks pass, delete the nonce (consume it) and return success
+      redis.call('DEL', key)
+      
+      -- Mark as used to prevent replay attacks
+      local used_nonce_key = 'used:nonce:' .. parsed_data.nonce
+      redis.call('SETEX', used_nonce_key, tonumber(ARGV[4]), '1')
+      
+      return cjson.encode({success = true, nonce = parsed_data.nonce})
+    `;
     
-    const results = await multi.exec();
-    const storedData = results[0] as string | null;
+    const result = await redis.eval(
+      luaScript,
+      [nonceKey],
+      [nonce, lowerAddress, Date.now().toString(), (NONCE_EXPIRY_SECONDS * 2).toString()]
+    );
     
-    if (!storedData) {
-      return false;
-    }
+    const parsedResult = JSON.parse(result as string);
     
-    const parsedData = JSON.parse(storedData);
-    const now = Date.now();
-    
-    // Enhanced validation checks
-    const checks = [
-      parsedData.nonce === nonce,
-      parsedData.address === lowerAddress,
-      parsedData.expiresAt > now,
-      now - parsedData.createdAt > 1000, // At least 1 second must have passed since creation
-      parsedData.createdAt > Date.now() - (1000 * 60 * 60 * 24), // Created less than 24 hours ago
-    ];
-    
-    if (checks.some(check => !check)) {
-      return false;
-    }
-    
-    // ✅ جلوگیری از replay attack
-    const usedNonceKey = `used:nonce:${nonce}`;
-    await redis.setex(usedNonceKey, NONCE_EXPIRY_SECONDS * 2, '1');
-    
-    return true;
+    return parsedResult.success === true;
     
   } catch (error) {
     console.error('Redis nonce verification failed, falling back to memory:', error);

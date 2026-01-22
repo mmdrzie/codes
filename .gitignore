@@ -7,47 +7,47 @@ dist/
 build/
 target/
 
-# Python specific
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-*.py.class
-*.so
-*.egg-info/
-.eggs/
-.venv/
-venv/
+# TypeScript/JavaScript specific
+*.tsbuildinfo
+*.js.map
+*.jsx.map
+*.ts.map
+
+# Logs and temp files
+*.log
+*.tmp
+
+# Environment
 .env
 .env.local
-.env.*
+*.env.*
 
-# Logs
-*.log
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
 
 # Coverage
 coverage/
 htmlcov/
 .coverage
 
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*.tmp
+# Python related (if any Python in project)
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+.mypy_cache/
+.pytest_cache/
 
-# OS
+# System files
 .DS_Store
 Thumbs.db
 
-# MyPy
-.mypy_cache/
-
-# PyTest
-.pytest_cache/
-
-# Compressed files
+# Archives
 *.zip
 *.gz
 *.tar

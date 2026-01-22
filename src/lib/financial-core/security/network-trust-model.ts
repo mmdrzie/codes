@@ -8,15 +8,20 @@ export interface TrustedProxyConfig {
     forwardedHost: string[];
     forwardedProto: string[];
   };
+  strictAllowList: boolean; // If true, reject all non-trusted proxies
+  clientIpAllowList: string[]; // Additional allow-list for client IPs
 }
 
 export class NetworkTrustModel {
   private readonly config: TrustedProxyConfig;
   private readonly trustedProxyRegexes: RegExp[];
+  private readonly clientIpAllowListRegexes: RegExp[];
 
   constructor(config: Partial<TrustedProxyConfig> = {}) {
     this.config = {
       trustedProxies: config.trustedProxies || [],
+      clientIpAllowList: config.clientIpAllowList || [],
+      strictAllowList: config.strictAllowList ?? false,
       forwardedHeaders: {
         clientIp: config.forwardedHeaders?.clientIp || ['x-forwarded-for', 'x-real-ip'],
         forwardedHost: config.forwardedHeaders?.forwardedHost || ['x-forwarded-host'],
@@ -36,9 +41,21 @@ export class NetworkTrustModel {
       return new RegExp(`^${pattern.replace(/\./g, '\\.').replace(/\*/g, '.*')}$`);
     });
 
+    // Precompile regexes for client IP allow-list
+    this.clientIpAllowListRegexes = this.config.clientIpAllowList.map(pattern => {
+      if (pattern.includes('/')) {
+        const [ip, bits] = pattern.split('/');
+        const escapedIp = ip.replace(/\./g, '\\.');
+        return new RegExp(`^${escapedIp}.*`);
+      }
+      return new RegExp(`^${pattern.replace(/\./g, '\\.').replace(/\*/g, '.*')}$`);
+    });
+
     logger.info('Network Trust Model initialized', {
       component: 'network-security',
-      trustedProxies: this.config.trustedProxies
+      trustedProxies: this.config.trustedProxies,
+      clientIpAllowList: this.config.clientIpAllowList,
+      strictAllowList: this.config.strictAllowList
     });
   }
 
@@ -47,6 +64,19 @@ export class NetworkTrustModel {
    */
   getClientIpAddress(req: IncomingMessage): string {
     const socketRemoteAddress = req.socket.remoteAddress;
+    
+    // If strict allow-list is enabled, validate the client IP
+    if (this.config.strictAllowList && socketRemoteAddress && !this.isClientIpAllowed(socketRemoteAddress)) {
+      logger.securityEvent('Client IP not in allow-list', {
+        component: 'network-security',
+        clientIp: socketRemoteAddress,
+        allowList: this.config.clientIpAllowList
+      });
+      
+      // In strict mode, return a safe default or block the request
+      // For now, we'll return a special value that indicates the IP is not trusted
+      return 'UNTRUSTED_CLIENT_IP';
+    }
     
     // If the direct remote address is trusted, use it
     if (socketRemoteAddress && this.isTrustedProxy(socketRemoteAddress)) {
@@ -72,6 +102,17 @@ export class NetworkTrustModel {
     });
     
     return socketRemoteAddress || 'unknown';
+  }
+
+  /**
+   * Check if a client IP is in the allow-list
+   */
+  private isClientIpAllowed(ip: string): boolean {
+    if (this.clientIpAllowListRegexes.length === 0) {
+      return true; // No allow-list means all IPs are allowed
+    }
+    
+    return this.clientIpAllowListRegexes.some(regex => regex.test(ip));
   }
 
   /**
@@ -118,8 +159,9 @@ export class NetworkTrustModel {
     
     const socketRemoteAddress = req.socket.remoteAddress;
     const isTrusted = this.isTrustedProxy(socketRemoteAddress);
+    const isAllowed = this.isClientIpAllowed(socketRemoteAddress || '');
     
-    if (!isTrusted) {
+    if (!isTrusted || !isAllowed) {
       // Check if untrusted clients are sending forwarded headers (potential spoofing)
       for (const headerName of [
         ...this.config.forwardedHeaders.clientIp,
@@ -130,6 +172,11 @@ export class NetworkTrustModel {
         if (value) {
           issues.push(`Untrusted client sent ${headerName} header: ${value}`);
         }
+      }
+      
+      // If strict allow-list is enabled and IP is not allowed, block the request
+      if (this.config.strictAllowList && !isAllowed) {
+        issues.push(`Client IP ${socketRemoteAddress} is not in the allow-list`);
       }
     }
     
@@ -199,6 +246,8 @@ export const DEFAULT_TRUSTED_PROXY_CONFIG: TrustedProxyConfig = {
     '192.168.0.0/16',
     // Common cloud provider ranges would go here in production
   ],
+  clientIpAllowList: [], // Empty means allow all IPs, populate with specific ranges in production
+  strictAllowList: false, // Set to true in production for extra security
   forwardedHeaders: {
     clientIp: ['x-forwarded-for', 'x-real-ip', 'x-client-ip'],
     forwardedHost: ['x-forwarded-host'],

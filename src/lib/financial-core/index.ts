@@ -72,7 +72,7 @@ export class FinancialCore {
       maxConcurrentTransactions: config?.maxConcurrentTransactions ?? 10
     };
 
-    this.ledger = getLedger();
+    this.ledger = getLedger(100); // Snapshot every 100 entries
     this.sessionManager = getSessionManager();
     this.networkTrustModel = getNetworkTrustModel();
     this.walletManager = getWalletManager();

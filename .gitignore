@@ -1,53 +1,56 @@
-```
+```gitignore
 # Dependencies
 node_modules/
 
-# Build artifacts
+# Build outputs
 dist/
 build/
 target/
 
-# TypeScript/JavaScript specific
-*.tsbuildinfo
-*.js.map
-*.jsx.map
-*.ts.map
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.py.class
+*.so
+*.egg-info/
+.eggs/
 
-# Logs and temp files
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# Logs
 *.log
-*.tmp
 
-# Environment
-.env
-.env.local
-*.env.*
+# OS generated files
+.DS_Store
+Thumbs.db
 
-# Editors
+# IDE
 .vscode/
 .idea/
 *.swp
 *.swo
+
+# Environment variables
+.env
+.env.local
+*.env.*
 
 # Coverage
 coverage/
 htmlcov/
 .coverage
 
-# Python related (if any Python in project)
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-.Python
-*.so
-.mypy_cache/
-.pytest_cache/
+# Temporary files
+*.tmp
+*.temp
 
-# System files
-.DS_Store
-Thumbs.db
-
-# Archives
+# Compressed files
 *.zip
 *.gz
 *.tar
@@ -70,4 +73,135 @@ Thumbs.db
 *.tar.bz2
 *.tar.xz
 *.tar.zst
+
+# Rust/Cargo (if applicable)
+Cargo.lock
+target/
+
+# Go (if applicable)
+bin/
+pkg/
+
+# Java/Maven/Gradle (if applicable)
+.gradle/
+target/
+
+# Node.js (beyond node_modules)
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Bower
+bower_components/
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+
+# Pytest
+.pytest_cache/
+
+# Mypy
+.mypy_cache/
+
+# ESLint
+eslint-cache
+
+# Vim
+*.swp
+*.swo
+
+# JetBrains
+*.iml
+*.iws
+*.ipr
+
+# Eclipse
+.settings/
+.project
+.classpath
+.externalToolBuilders/
+.launch
+.tm_properties
+
+# Visual Studio
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# XCode
+*.xcodeproj/
+*.xcworkspace/
+*.pbxuser
+*.perspectivev3
+*.xccheckout
+*.moved-aside
+DerivedData/
+
+# Android
+*.apk
+*.aar
+*.dex
+
+# iOS
+*.ipa
+
+# C#
+*.sln
+*.csproj.user
+*.userprefs
+*.pidb
+*.svclog
+
+# C/C++
+*.o
+*.obj
+*.exe
+*.dll
+*.so
+*.a
+*.lib
+*.dylib
+*.plist
+
+# Ruby
+*.gem
+.bundle/
+Gemfile.lock
+
+# Web
+.sass-cache/
+public/system/
+public/uploads/
+
+# Database
+*.db
+*.db-journal
+
+# Backup files
+*~
+*.bak
+*.backup
+
+# Documentation
+docs/_build/
+
+# Distribution / packaging
+.Python
+__pycache__/
+pip-log.txt
+pip-delete-this-directory.txt
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.log
+.gitattributes
+.rultor.yml
+.circleci/config.yml
+.travis.yml
+appveyor.yml
 ```

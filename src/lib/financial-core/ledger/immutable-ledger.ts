@@ -33,11 +33,23 @@ export interface TransactionIntent {
   settledBy?: string;
 }
 
+export interface LedgerSnapshot {
+  id: string;
+  timestamp: number;
+  entryCount: number;
+  merkleRoot: string;
+  hash: string;
+}
+
 export class ImmutableLedger {
   private entries: LedgerEntry[] = [];
   private readonly genesisHash = '0'.repeat(64);
+  private snapshots: LedgerSnapshot[] = [];
+  private snapshotInterval: number; // Number of entries between snapshots
   
-  constructor() {
+  constructor(snapshotInterval: number = 100) { // Default to snapshot every 100 entries
+    this.snapshotInterval = snapshotInterval;
+    
     // Initialize with genesis entry
     const genesisEntry: LedgerEntry = {
       id: 'genesis',
@@ -66,9 +78,13 @@ export class ImmutableLedger {
     genesisEntry.hash = createHash('sha256').update(serialized).digest('hex');
     this.entries.push(genesisEntry);
     
+    // Create initial snapshot for genesis
+    this.createSnapshot();
+    
     logger.info('Financial Core: Immutable ledger initialized', {
       component: 'ledger',
-      hash: genesisEntry.hash
+      hash: genesisEntry.hash,
+      snapshotInterval: this.snapshotInterval
     });
   }
 
@@ -119,6 +135,11 @@ export class ImmutableLedger {
       hash: newEntry.hash,
       previousHash: newEntry.previousHash
     });
+
+    // Create a snapshot if we've reached the interval threshold
+    if (this.entries.length % this.snapshotInterval === 0) {
+      this.createSnapshot();
+    }
 
     return newEntry;
   }
@@ -192,6 +213,159 @@ export class ImmutableLedger {
     return this.entries.filter(entry => entry.transactionId === transactionId);
   }
 
+  /**
+   * Calculate the Merkle root for the current ledger entries
+   */
+  private calculateMerkleRoot(entries: LedgerEntry[]): string {
+    if (entries.length === 0) {
+      return createHash('sha256').update('').digest('hex');
+    }
+    
+    if (entries.length === 1) {
+      return entries[0].hash;
+    }
+
+    // Create leaf hashes for all entries
+    let hashes = entries.map(entry => entry.hash);
+
+    // Build the Merkle tree bottom-up
+    while (hashes.length > 1) {
+      const newLevel = [];
+      
+      for (let i = 0; i < hashes.length; i += 2) {
+        const left = hashes[i];
+        const right = i + 1 < hashes.length ? hashes[i + 1] : hashes[i]; // Duplicate if odd
+        
+        const combined = createHash('sha256')
+          .update(left + right)
+          .digest('hex');
+        
+        newLevel.push(combined);
+      }
+      
+      hashes = newLevel;
+    }
+    
+    return hashes[0];
+  }
+
+  /**
+   * Create a snapshot of the current ledger state
+   */
+  private createSnapshot(): void {
+    if (this.entries.length === 0) {
+      return;
+    }
+
+    const merkleRoot = this.calculateMerkleRoot(this.entries);
+    const snapshotId = `snapshot-${Date.now()}`;
+    
+    // Create a hash of the snapshot data for integrity verification
+    const snapshotData = {
+      id: snapshotId,
+      timestamp: Date.now(),
+      entryCount: this.entries.length,
+      merkleRoot
+    };
+    
+    const snapshotHash = createHash('sha256')
+      .update(JSON.stringify(snapshotData))
+      .digest('hex');
+
+    const snapshot: LedgerSnapshot = {
+      ...snapshotData,
+      hash: snapshotHash
+    };
+
+    this.snapshots.push(snapshot);
+    
+    logger.info('Ledger snapshot created', {
+      component: 'ledger',
+      snapshotId,
+      entryCount: this.entries.length,
+      merkleRoot
+    });
+  }
+
+  /**
+   * Verify a snapshot integrity
+   */
+  private verifySnapshot(snapshot: LedgerSnapshot): boolean {
+    const snapshotData = {
+      id: snapshot.id,
+      timestamp: snapshot.timestamp,
+      entryCount: snapshot.entryCount,
+      merkleRoot: snapshot.merkleRoot
+    };
+    
+    const recalculatedHash = createHash('sha256')
+      .update(JSON.stringify(snapshotData))
+      .digest('hex');
+    
+    return recalculatedHash === snapshot.hash;
+  }
+
+  /**
+   * Get all snapshots
+   */
+  getSnapshots(): readonly LedgerSnapshot[] {
+    return [...this.snapshots]; // Return immutable copy
+  }
+
+  /**
+   * Get latest snapshot
+   */
+  getLatestSnapshot(): LedgerSnapshot | undefined {
+    if (this.snapshots.length === 0) {
+      return undefined;
+    }
+    return this.snapshots[this.snapshots.length - 1];
+  }
+
+  /**
+   * Verify the integrity of the ledger using snapshots
+   */
+  async verifyIntegrityWithSnapshots(): Promise<boolean> {
+    // First verify basic integrity
+    const basicIntegrity = this.verifyIntegrity();
+    if (!basicIntegrity) {
+      return false;
+    }
+
+    // Verify all snapshots
+    for (const snapshot of this.snapshots) {
+      if (!this.verifySnapshot(snapshot)) {
+        logger.error('Ledger snapshot integrity violation detected', {
+          component: 'ledger',
+          snapshotId: snapshot.id
+        });
+        return false;
+      }
+    }
+
+    // Verify that the calculated Merkle root matches the snapshot
+    const latestSnapshot = this.getLatestSnapshot();
+    if (latestSnapshot && latestSnapshot.entryCount === this.entries.length) {
+      const currentMerkleRoot = this.calculateMerkleRoot(this.entries);
+      if (currentMerkleRoot !== latestSnapshot.merkleRoot) {
+        logger.error('Ledger Merkle root mismatch with latest snapshot', {
+          component: 'ledger',
+          expected: latestSnapshot.merkleRoot,
+          actual: currentMerkleRoot
+        });
+        return false;
+      }
+    }
+
+    logger.info('Ledger integrity verified with snapshots', {
+      component: 'ledger',
+      totalEntries: this.entries.length,
+      totalSnapshots: this.snapshots.length
+    });
+
+    return true;
+  }
+
   private generateId(): string {
     return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
   }
@@ -206,9 +380,9 @@ export class ImmutableLedger {
 // Global singleton instance
 let ledgerInstance: ImmutableLedger | null = null;
 
-export function getLedger(): ImmutableLedger {
+export function getLedger(snapshotInterval?: number): ImmutableLedger {
   if (!ledgerInstance) {
-    ledgerInstance = new ImmutableLedger();
+    ledgerInstance = new ImmutableLedger(snapshotInterval);
   }
   return ledgerInstance;
 }

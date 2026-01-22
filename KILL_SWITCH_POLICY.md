@@ -1,13 +1,13 @@
-# KILL-SWITCH & FUND-FREEZE POLICY
+# KILL-SWITCH & CUSTODY-FREEZE POLICY
 
 ## OVERVIEW
-This document defines the hard stop mechanisms for the financial system. These mechanisms must work independently of system components to ensure safety even when individual services fail.
+This document defines the hard stop mechanisms for the custodial system. These mechanisms must work independently of system components to ensure safety even when individual services fail.
 
-## FUND FREEZE TRIGGERS
+## CUSTODY FREEZE TRIGGERS
 
 ### AUTOMATIC TRIGGERS
-- **Ledger Invariant Violation**: Any double-entry accounting imbalance detected
-- **Reconciliation Mismatch**: Discrepancy found during automated reconciliation
+- **Wallet Operation Violation**: Any unauthorized operation detected
+- **Custody Integrity Failure**: Discrepancy found during automated integrity checks
 - **Full Redis Outage**: Complete inability to connect to Redis for >30 seconds
 - **Critical Security Events**: Token forgery, replay attacks, privilege escalation detected
 - **Data Integrity Failure**: Checksum validation failures in critical data
@@ -15,8 +15,7 @@ This document defines the hard stop mechanisms for the financial system. These m
 ### MANUAL TRIGGERS
 - **Operations Team**: Via emergency kill-switch endpoint
 - **Security Team**: When security compromise is suspected
-- **Compliance Officer**: When regulatory violations are detected
-- **Executive Override**: CEO/CFO authorized system halt
+- **Executive Override**: Senior leadership authorized system halt
 
 ### MULTI-PARTY APPROVAL TRIGGERS
 - **Dual Control**: Requires 2 of 3 senior staff members to approve
@@ -88,20 +87,20 @@ class SystemFreezeControl {
 }
 ```
 
-### LEDGER LAYER ENFORCEMENT
-- All ledger write operations check system status before proceeding
-- Account-specific freezes prevent new transactions to/from frozen accounts
+### CUSTODY LAYER ENFORCEMENT
+- All wallet operations check system status before proceeding
+- Account-specific freezes prevent new operations to/from frozen accounts
 - Balance queries may continue in read-only mode during freezes
 
-### TRANSACTION ENGINE ENFORCEMENT
-- Transaction validation checks both system and account freeze status
-- Failed transactions due to freeze are queued for retry when thawed
-- Transaction processing halts entirely during system-wide freeze
+### OPERATION ENGINE ENFORCEMENT
+- Operation validation checks both system and account freeze status
+- Failed operations due to freeze are blocked permanently
+- Operation processing halts entirely during system-wide freeze
 
-### WITHDRAWAL PATH ENFORCEMENT
-- All withdrawal endpoints check freeze status first
-- Withdrawal operations blocked for frozen accounts
-- System-wide freeze blocks all withdrawals regardless of account status
+### WITHDRAWAL/WALLET PATH ENFORCEMENT
+- All wallet endpoints check freeze status first
+- Wallet operations blocked for frozen accounts
+- System-wide freeze blocks all wallet operations regardless of account status
 
 ## FREEZE LIFECYCLE MANAGEMENT
 
@@ -109,17 +108,17 @@ class SystemFreezeControl {
 
 #### ACCOUNT-LEVEL FREEZE
 - **Required Proofs**: Identity verification and account ownership proof
-- **Required Reconciliation**: Balance verification and transaction history review
-- **Required Human Approvals**: Single approver from compliance team minimum
+- **Required Verification**: Balance verification and operation history review
+- **Required Human Approvals**: Single approver from security team minimum
 
 #### SYSTEM-WIDE FREEZE
 - **Required Proofs**: Complete system health checks and security validation
-- **Required Reconciliation**: Full ledger reconciliation and balance verification
+- **Required Verification**: Full integrity checks and balance verification
 - **Required Human Approvals**: Dual approval from operations and security leads
 
 #### EMERGENCY FREEZE
 - **Required Proofs**: Forensic analysis completion and remediation validation
-- **Required Reconciliation**: Complete data integrity verification
+- **Required Verification**: Complete data integrity verification
 - **Required Human Approvals**: Executive committee approval required
 
 ### FREEZE DURATION POLICIES

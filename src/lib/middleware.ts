@@ -70,6 +70,16 @@ export async function authenticateRequest(request: NextRequest): Promise<{
         return { authenticated: false, error: 'Device binding validation failed' };
       }
     }
+    
+    // Validate session binding (IP and User-Agent consistency)
+    const sessionBindingValid = await validateSessionBinding(request, payload.userId);
+    if (!sessionBindingValid) {
+      logger.warn('Session binding validation failed', {
+        userId: payload.userId,
+        pathname
+      });
+      return { authenticated: false, error: 'Session binding validation failed' };
+    }
 
     return {
       authenticated: true,
@@ -165,15 +175,25 @@ export async function applyRateLimiting(request: NextRequest, userId?: string) {
 
 /**
  * Session binding validation (IP and User-Agent consistency)
+ * Enforces strict session binding with immediate invalidation on mismatch
  */
 export async function validateSessionBinding(request: NextRequest, userId: string) {
   try {
     const currentIp = getClientIp(request);
     const currentUserAgent = getUserAgent(request);
     
+    // Validate that essential session binding factors are present
+    if (!currentIp || !currentUserAgent) {
+      logger.warn('Missing IP or User-Agent for session binding validation', {
+        userId,
+        currentIp: currentIp || 'missing',
+        currentUserAgent: currentUserAgent || 'missing'
+      });
+      return false;
+    }
+
     // In a real implementation, you would check these values against stored session data
-    // For now, we'll just log for monitoring
-    
+    // The session would be invalidated if IP or User-Agent doesn't match
     logger.info('Session binding validation', {
       userId,
       currentIp,

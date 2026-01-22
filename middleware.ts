@@ -19,6 +19,7 @@ import { logger } from './src/lib/logger';
 import { isPublicRoute, isProtectedRoute } from './src/config/routes';
 import { HardenedAuthService } from './src/services/auth/hardened-auth-service';
 import crypto from 'crypto';
+import { addAdvancedSecurityHeaders, sessionManager } from './src/lib/advanced-security-config';
 
 // Security configuration
 const SECURITY_CONFIG = {
@@ -142,13 +143,14 @@ export async function middleware(req: NextRequest) {
           const currentIp = getClientIp(req);
           const currentUserAgent = req.headers.get('user-agent') || 'unknown';
           
-          const isBindingValid = await validateSessionBinding(
+          // Use advanced session manager for validation
+          const sessionValidation = await sessionManager.validateSession(
             sessionId,
             currentIp,
             currentUserAgent
           );
           
-          if (!isBindingValid) {
+          if (!sessionValidation.isValid) {
             logger.warn('Session binding validation failed', {
               userId: authContext.userId,
               ip: currentIp,
@@ -179,8 +181,8 @@ export async function middleware(req: NextRequest) {
     // Create response and add security headers
     const response = NextResponse.next();
     
-    // Add security headers with dynamic CSP nonce
-    addSecurityHeaders(response);
+    // Add advanced security headers with dynamic CSP nonce
+    addAdvancedSecurityHeaders(response);
     
     // Add request ID for tracking
     const requestId = `req_${Date.now()}_${crypto.randomUUID()}`;

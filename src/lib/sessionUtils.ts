@@ -7,6 +7,7 @@ import { logger } from './logger';
 import { SecurityMonitor } from './security-monitoring';
 import { siemService } from './siem-integration';
 import { SecurityEventType } from './security-monitoring';
+import { sessionManager } from './advanced-security-config';
 
 // ✅ Validation برای JWT secret
 const getJwtSecret = (): string => {
@@ -246,177 +247,15 @@ export async function validateSessionBinding(
   currentIp: string,
   currentUserAgent: string
 ): Promise<boolean> {
-  try {
-    let sessionData: SessionMeta | null = null;
-    
-    if (process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN) {
-      const redisData = await redis.get(`${SESSION_PREFIX}${sessionId}`);
-      if (redisData) {
-        sessionData = JSON.parse(redisData as string) as SessionMeta;
-      }
-    } else {
-      const memData = sessionMemory.get(sessionId);
-      if (memData && memData.expiresAt > Date.now()) {
-        sessionData = memData.meta;
-      }
-    }
+  // Use the advanced session manager for validation
+  const sessionValidation = await sessionManager.validateSession(
+    sessionId,
+    currentIp,
+    currentUserAgent
+  );
 
-    if (!sessionData) {
-      logger.warn('Session not found during binding validation', { sessionId });
-      return false;
-    }
-
-    // ENFORCE strict security: Validate IP and User-Agent consistency IMMEDIATELY
-    const isIpConsistent = sessionData.ipAddress && 
-                          (currentIp === sessionData.ipAddress);
-    
-    const isUserAgentConsistent = sessionData.userAgent && 
-                                   currentUserAgent === sessionData.userAgent;
-
-    // IMMEDIATELY INVALIDATE session if bindings don't match
-    if (!isIpConsistent || !isUserAgentConsistent) {
-      logger.warn('Session binding validation failed - IMMEDIATE INVALIDATION triggered', { 
-        sessionId, 
-        userId: sessionData.userId,
-        isIpConsistent,
-        isUserAgentConsistent,
-        originalIp: sessionData.ipAddress,
-        currentIp,
-        originalUserAgent: sessionData.userAgent,
-        currentUserAgent
-      });
-      
-      // IMMEDIATELY invalidate the session by deleting it
-      if (process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN) {
-        await redis.del(`${SESSION_PREFIX}${sessionId}`);
-      } else {
-        sessionMemory.delete(sessionId);
-      }
-      
-      // Emit security event for binding violation and session hijacking attempt
-      await SecurityMonitor.logEvent(
-        SecurityEventType.SESSION_HIJACK_ATTEMPT,
-        { 
-          timestamp: new Date(),
-          userId: sessionData.userId,
-          metadata: { 
-            sessionId,
-            validationType: 'session_binding',
-            ip_consistent: isIpConsistent,
-            ua_consistent: isUserAgentConsistent,
-            current_ip: currentIp,
-            current_ua: currentUserAgent,
-            original_ip: sessionData.ipAddress,
-            original_ua: sessionData.userAgent
-          }
-        },
-        'Session hijack attempt detected - session invalidated'
-      );
-      
-      return false;
-    }
-
-    // Update last access info only if session is valid
-    sessionData.lastAccessed = Date.now();
-    sessionData.lastAccessIp = currentIp;
-    sessionData.lastAccessUserAgent = currentUserAgent;
-
-    // Store updated session data
-    if (process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN) {
-      const ttl = Math.floor((sessionData.createdAt + 7 * 24 * 60 * 60 * 1000 - Date.now()) / 1000);
-      if (ttl > 0) {
-        await redis.setex(`${SESSION_PREFIX}${sessionId}`, ttl, JSON.stringify(sessionData));
-      }
-    } else {
-      const expiresAt = sessionData.createdAt + 7 * 24 * 60 * 60 * 1000;
-      sessionMemory.set(sessionId, { meta: sessionData, expiresAt });
-    }
-
-    // Enhanced security: Check for suspicious patterns even when consistent
-    const isIpSuspicious = sessionData.ipAddress && 
-                          currentIp !== sessionData.ipAddress &&
-                          !currentIp.startsWith(sessionData.ipAddress.split(':')[0]);
-    
-    const isUserAgentSuspicious = sessionData.userAgent && 
-                                 !currentUserAgent.includes(sessionData.userAgent.split(' ')[0]);
-
-    // Enhanced security: Detect and log suspicious patterns
-    if (isIpSuspicious) {
-      logger.warn('Suspicious IP change detected', {
-        sessionId,
-        originalIp: sessionData.ipAddress,
-        currentIp,
-        userId: sessionData.userId
-      });
-      
-      // Emit security event for suspicious IP change
-      await SecurityMonitor.logEvent(
-        SecurityEventType.GEO_IP_ANOMALY,
-        { 
-          timestamp: new Date(),
-          userId: sessionData.userId,
-          metadata: { 
-            originalIp: sessionData.ipAddress,
-            currentIp,
-            sessionId,
-            validationType: 'session_binding'
-          }
-        },
-        'Geographic IP anomaly detected in session validation'
-      );
-    }
-    
-    if (isUserAgentSuspicious) {
-      logger.warn('Suspicious User-Agent change detected', {
-        sessionId,
-        originalUserAgent: sessionData.userAgent,
-        currentUserAgent,
-        userId: sessionData.userId
-      });
-      
-      // Emit security event for suspicious User-Agent change
-      await SecurityMonitor.logEvent(
-        SecurityEventType.DEVICE_MISMATCH,
-        { 
-          timestamp: new Date(),
-          userId: sessionData.userId,
-          metadata: { 
-            originalUserAgent: sessionData.userAgent,
-            currentUserAgent,
-            sessionId,
-            validationType: 'session_binding'
-          }
-        },
-        'Device mismatch detected in session validation'
-      );
-    }
-
-    // Log successful validation
-    await SecurityMonitor.logEvent(
-      SecurityEventType.SESSION_VALIDATED,
-      { 
-        timestamp: new Date(),
-        userId: sessionData.userId,
-        metadata: { 
-          sessionId,
-          validationType: 'session_binding',
-          ip_consistent: isIpConsistent,
-          ua_consistent: isUserAgentConsistent
-        }
-      },
-      'Session binding validation passed'
-    );
-
-    return true;
-  } catch (error) {
-    logger.error('Session binding validation error', { 
-      error: (error as Error).message, 
-      sessionId,
-      currentIp,
-      currentUserAgent
-    });
-    return false;
-  }
+  // Return the validity status
+  return sessionValidation.isValid;
 }
 
 // ✅ Check for replay attacks using JWT ID (jti)

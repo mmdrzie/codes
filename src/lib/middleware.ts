@@ -147,7 +147,7 @@ export async function applyRateLimiting(request: NextRequest, userId?: string) {
   const fullIdentifier = userId ? `${combinedIdentifier}:user:${userId}` : combinedIdentifier;
 
   // Determine rate limit type based on endpoint
-  let rateLimitType: 'login' | 'register' | 'walletAuth' | 'api' | 'passwordReset' = 'api';
+  let rateLimitType: 'login' | 'register' | 'walletAuth' | 'api' | 'passwordReset' | 'nonce' | 'refresh' = 'api';
   
   if (endpoint.includes('/api/auth/login')) {
     rateLimitType = 'login';
@@ -157,14 +157,18 @@ export async function applyRateLimiting(request: NextRequest, userId?: string) {
     rateLimitType = 'walletAuth';
   } else if (endpoint.includes('/api/auth/password-reset')) {
     rateLimitType = 'passwordReset';
+  } else if (endpoint.includes('/api/auth/nonce')) {
+    rateLimitType = 'nonce';
+  } else if (endpoint.includes('/api/auth/refresh')) {
+    rateLimitType = 'refresh';
   }
 
   // Check multiple rate limits to prevent bypass
   const checks = [
-    checkRateLimit(ipIdentifier, rateLimitType),           // IP-based limit
-    checkRateLimit(userAgentIdentifier, rateLimitType),    // User-agent based limit
-    checkRateLimit(combinedIdentifier, rateLimitType),     // Combined limit
-    checkRateLimit(fullIdentifier, rateLimitType)          // Full identifier limit
+    checkRateLimit(ipIdentifier, rateLimitType, { userId, accountId: userId, behaviorPattern: 'ip_based' }),           // IP-based limit
+    checkRateLimit(userAgentIdentifier, rateLimitType, { userId, accountId: userId, behaviorPattern: 'ua_based' }),    // User-agent based limit
+    checkRateLimit(combinedIdentifier, rateLimitType, { userId, accountId: userId, behaviorPattern: 'combined' }),     // Combined limit
+    checkRateLimit(fullIdentifier, rateLimitType, { userId, accountId: userId, behaviorPattern: 'full_identifier' })   // Full identifier limit
   ];
 
   const results = await Promise.all(checks);
@@ -279,9 +283,9 @@ export function addSecurityHeaders(response: NextResponse): NextResponse {
     'Referrer-Policy': 'strict-origin-when-cross-origin',
     'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
     'Content-Security-Policy': [
-      "default-src 'self'",
-      "script-src 'self'",  // Disallow inline scripts and eval
-      "style-src 'self'",   // Disallow inline styles
+      "default-src 'self'", 
+      "script-src 'self' 'unsafe-inline'",  // Temporarily allowing unsafe-inline for Next.js, but this should be removed in production
+      "style-src 'self' 'unsafe-inline'",   // Temporarily allowing unsafe-inline for Next.js styling, but this should be removed in production
       "img-src 'self' data: https:",
       "font-src 'self' https:",
       "connect-src 'self' https:",
@@ -292,7 +296,21 @@ export function addSecurityHeaders(response: NextResponse): NextResponse {
     ].join('; ')
   };
 
+  // In production, remove 'unsafe-inline' directives and use proper CSP
   if (process.env.NODE_ENV === 'production') {
+    securityHeaders['Content-Security-Policy'] = [
+      "default-src 'self'",
+      "script-src 'self'",  // Removed 'unsafe-inline' - only allow scripts from same origin
+      "style-src 'self'",   // Removed 'unsafe-inline' - only allow styles from same origin
+      "img-src 'self' data: https:",
+      "font-src 'self' https:",
+      "connect-src 'self' https:",
+      "frame-ancestors 'none'",
+      "object-src 'none'",
+      "base-uri 'self'",
+      "form-action 'self'"
+    ].join('; ');
+    
     securityHeaders['Strict-Transport-Security'] = 'max-age=63072000; includeSubDomains; preload';
   }
 

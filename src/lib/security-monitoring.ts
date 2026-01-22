@@ -5,6 +5,39 @@ import {
   SeverityLevel 
 } from './siem-integration';
 
+// Log rate limiting - prevent log flooding
+const LOG_RATE_LIMIT_WINDOW_MS = 60000; // 1 minute window
+const LOG_RATE_LIMIT_COUNT = 100; // Max 100 logs per window per type
+
+interface LogRateLimitBucket {
+  count: number;
+  startTime: number;
+}
+
+const logRateLimitBuckets = new Map<string, LogRateLimitBucket>();
+
+function isLogRateLimited(eventType: SecurityEvent): boolean {
+  const key = `${eventType}`;
+  const now = Date.now();
+  const bucket = logRateLimitBuckets.get(key);
+  
+  if (!bucket || (now - bucket.startTime) > LOG_RATE_LIMIT_WINDOW_MS) {
+    // Reset bucket if expired
+    logRateLimitBuckets.set(key, {
+      count: 1,
+      startTime: now
+    });
+    return false;
+  }
+  
+  if (bucket.count >= LOG_RATE_LIMIT_COUNT) {
+    return true;
+  }
+  
+  bucket.count++;
+  return false;
+}
+
 // Security event types - now mapped to SIEM types
 export enum SecurityEvent {
   AUTH_SUCCESS = 'auth_success',
@@ -40,6 +73,12 @@ export class SecurityMonitor {
    * Log a security event
    */
   static async logEvent(eventType: SecurityEvent, context: SecurityContext, message?: string): Promise<void> {
+    // Check log rate limiting
+    if (isLogRateLimited(eventType)) {
+      console.warn(`Log rate limit exceeded for event type: ${eventType}. Suppressing further logs.`);
+      return;
+    }
+    
     const securityEvent = {
       eventType,
       context: {

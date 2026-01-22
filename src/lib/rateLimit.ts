@@ -113,11 +113,12 @@ export function getIdentifier(request: NextRequest, userId?: string): string {
 }
 
 /**
- * بررسی Rate Limit
+ * Multi-layered rate limiting with IP-based, account-based, and behavior-based protection
  */
 export async function checkRateLimit(
   identifier: string,
-  type: RateLimitType
+  type: RateLimitType,
+  additionalIdentifiers?: { userId?: string; accountId?: string; behaviorPattern?: string }
 ): Promise<{
   allowed: boolean;
   remaining: number;
@@ -126,133 +127,207 @@ export async function checkRateLimit(
 }> {
   const config = RATE_LIMITS[type];
   const now = Date.now();
-  const key = `${RATE_LIMIT_PREFIX}${type}:${identifier}`;
-  const blockedKey = `${BLOCKED_PREFIX}${type}:${identifier}`;
+  
+  // Multiple rate limit checks to prevent bypass
+  const checks = [];
+  
+  // Original identifier check
+  const baseKey = `${RATE_LIMIT_PREFIX}${type}:${identifier}`;
+  const baseBlockedKey = `${BLOCKED_PREFIX}${type}:${identifier}`;
+  checks.push({ key: baseKey, blockedKey: baseBlockedKey, identifier });
 
-  // Check if identifier is blocked
-  if (process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN) {
-    try {
-      const isBlocked = await redis.get(blockedKey);
-      if (isBlocked) {
-        const blockUntil = await redis.ttl(blockedKey);
-        const resetAt = now + (blockUntil * 1000);
-        
-        logger.warn('Rate limit blocked request', { 
-          identifier, 
-          type, 
-          resetAt: new Date(resetAt).toISOString() 
-        });
-        
-        return {
-          allowed: false,
-          remaining: 0,
-          resetAt,
-          message: config.message
-        };
-      }
-    } catch (error) {
-      logger.error('Redis error in rate limit check', { error: (error as Error).message });
-      // Fallback to in-memory if Redis fails
-    }
+  // Account-based rate limiting if available
+  if (additionalIdentifiers?.userId) {
+    const userKey = `${RATE_LIMIT_PREFIX}${type}:user:${additionalIdentifiers.userId}`;
+    const userBlockedKey = `${BLOCKED_PREFIX}${type}:user:${additionalIdentifiers.userId}`;
+    checks.push({ key: userKey, blockedKey: userBlockedKey, identifier: `user:${additionalIdentifiers.userId}` });
   }
-
-  // دریافت یا ایجاد record
-  let record: RateLimitRecord | null = null;
-
-  if (process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN) {
-    try {
-      const redisData = await redis.get(key);
-      if (redisData) {
-        record = redisData as RateLimitRecord;
-      }
-    } catch (error) {
-      logger.error('Redis get error', { error: (error as Error).message });
-    }
+  
+  // Account-based rate limiting if available
+  if (additionalIdentifiers?.accountId) {
+    const accountKey = `${RATE_LIMIT_PREFIX}${type}:account:${additionalIdentifiers.accountId}`;
+    const accountBlockedKey = `${BLOCKED_PREFIX}${type}:account:${additionalIdentifiers.accountId}`;
+    checks.push({ key: accountKey, blockedKey: accountBlockedKey, identifier: `account:${additionalIdentifiers.accountId}` });
   }
-
-  if (!record) {
-    record = {
-      timestamps: [],
-      blocked: false
-    };
+  
+  // Behavior pattern-based rate limiting
+  if (additionalIdentifiers?.behaviorPattern) {
+    const behaviorKey = `${RATE_LIMIT_PREFIX}${type}:behavior:${additionalIdentifiers.behaviorPattern}`;
+    const behaviorBlockedKey = `${BLOCKED_PREFIX}${type}:behavior:${additionalIdentifiers.behaviorPattern}`;
+    checks.push({ key: behaviorKey, blockedKey: behaviorBlockedKey, identifier: `behavior:${additionalIdentifiers.behaviorPattern}` });
   }
-
-  // فیلتر کردن timestamp های داخل window
-  const validTimestamps = record.timestamps.filter(
-    timestamp => now - timestamp < config.window
-  );
-
-  // بررسی محدودیت
-  if (validTimestamps.length >= config.max) {
-    // مسدود کردن identifier
-    const blockDuration = config.window;
-    record.blocked = true;
-    
+  
+  // Check if any identifier is blocked
+  for (const check of checks) {
     if (process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN) {
       try {
-        // Store block status in Redis
-        await redis.setex(blockedKey, Math.floor(blockDuration / 1000), '1');
-        // Clean up the request count
-        await redis.del(key);
+        const isBlocked = await redis.get(check.blockedKey);
+        if (isBlocked) {
+          const blockUntil = await redis.ttl(check.blockedKey);
+          const resetAt = now + (blockUntil * 1000);
+          
+          logger.warn('Rate limit blocked request', { 
+            identifier: check.identifier, 
+            type, 
+            resetAt: new Date(resetAt).toISOString() 
+          });
+          
+          return {
+            allowed: false,
+            remaining: 0,
+            resetAt,
+            message: config.message
+          };
+        }
       } catch (error) {
-        logger.error('Redis set error in rate limiting', { error: (error as Error).message });
+        logger.error('Redis error in rate limit check', { error: (error as Error).message });
+        // Fallback to in-memory if Redis fails
+      }
+    }
+  }
+
+  // Perform all rate limit checks
+  let lowestRemaining = config.max;
+  let earliestResetAt = now + config.window;
+  
+  for (const check of checks) {
+    // Get or create record
+    let record: RateLimitRecord | null = null;
+
+    if (process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN) {
+      try {
+        const redisData = await redis.get(check.key);
+        if (redisData) {
+          record = redisData as RateLimitRecord;
+        }
+      } catch (error) {
+        logger.error('Redis get error', { error: (error as Error).message });
+      }
+    }
+
+    if (!record) {
+      record = {
+        timestamps: [],
+        blocked: false
+      };
+    }
+
+    // Filter timestamps within window
+    const validTimestamps = record.timestamps.filter(
+      timestamp => now - timestamp < config.window
+    );
+
+    // Check if this specific identifier has exceeded limits
+    if (validTimestamps.length >= config.max) {
+      // Block this specific identifier
+      const blockDuration = config.window;
+      record.blocked = true;
+      
+      if (process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN) {
+        try {
+          // Store block status in Redis
+          await redis.setex(check.blockedKey, Math.floor(blockDuration / 1000), '1');
+          // Clean up the request count
+          await redis.del(check.key);
+        } catch (error) {
+          logger.error('Redis set error in rate limiting', { error: (error as Error).message });
+        }
+      } else {
+        // Fallback to in-memory storage
+        record.blockedUntil = now + blockDuration;
+        requestStore.set(check.key, record);
+      }
+
+      const resetAt = now + blockDuration;
+      
+      logger.warn('Rate limit exceeded', { 
+        identifier: check.identifier, 
+        type, 
+        attempts: validTimestamps.length,
+        resetAt: new Date(resetAt).toISOString() 
+      });
+
+      return {
+        allowed: false,
+        remaining: 0,
+        resetAt,
+        message: config.message
+      };
+    }
+    
+    // Track lowest remaining count across all checks
+    const remaining = Math.max(0, config.max - validTimestamps.length);
+    if (remaining < lowestRemaining) {
+      lowestRemaining = remaining;
+    }
+  }
+
+  // If we get here, all checks passed - update all relevant counters
+  for (const check of checks) {
+    // Get or create record again to make sure we have fresh data
+    let record: RateLimitRecord | null = null;
+
+    if (process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN) {
+      try {
+        const redisData = await redis.get(check.key);
+        if (redisData) {
+          record = redisData as RateLimitRecord;
+        }
+      } catch (error) {
+        logger.error('Redis get error', { error: (error as Error).message });
+      }
+    }
+
+    if (!record) {
+      record = {
+        timestamps: [],
+        blocked: false
+      };
+    }
+
+    // Add current timestamp to all relevant counters
+    const validTimestamps = record.timestamps.filter(
+      timestamp => now - timestamp < config.window
+    );
+    validTimestamps.push(now);
+    record.timestamps = validTimestamps;
+
+    // Store in Redis or memory
+    if (process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN) {
+      try {
+        await redis.setex(check.key, Math.floor(config.window / 1000), record);
+      } catch (error) {
+        logger.error('Redis set error', { error: (error as Error).message });
+        // Fallback to in-memory
+        requestStore.set(check.key, record);
       }
     } else {
-      // Fallback to in-memory storage
-      record.blockedUntil = now + blockDuration;
-      requestStore.set(key, record);
+      requestStore.set(check.key, record);
     }
-
-    const resetAt = now + blockDuration;
-    
-    logger.warn('Rate limit exceeded', { 
-      identifier, 
-      type, 
-      attempts: validTimestamps.length,
-      resetAt: new Date(resetAt).toISOString() 
-    });
-
-    return {
-      allowed: false,
-      remaining: 0,
-      resetAt,
-      message: config.message
-    };
   }
 
-  // اضافه کردن timestamp جدید
-  validTimestamps.push(now);
-  record.timestamps = validTimestamps;
+  const resetAt = now + config.window;
 
-  // Store in Redis or memory
-  if (process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN) {
-    try {
-      await redis.setex(key, Math.floor(config.window / 1000), record);
-    } catch (error) {
-      logger.error('Redis set error', { error: (error as Error).message });
-      // Fallback to in-memory
-      requestStore.set(key, record);
-    }
-  } else {
-    requestStore.set(key, record);
-  }
-
-  const oldestTimestamp = validTimestamps[0];
-  const resetAt = oldestTimestamp ? oldestTimestamp + config.window : now + config.window;
-
-  const remaining = Math.max(0, config.max - validTimestamps.length);
-
-  logger.debug('Rate limit check', { 
+  logger.debug('Rate limit check passed', { 
     identifier, 
     type, 
-    remaining,
-    attempts: validTimestamps.length,
+    remaining: lowestRemaining,
+    attempts: checks.map(check => {
+      let record: RateLimitRecord | null = null;
+      if (process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN) {
+        // This is just for logging, we won't actually fetch again
+        return 'N/A';
+      } else {
+        const stored = requestStore.get(baseKey);
+        return stored ? stored.timestamps.length : 0;
+      }
+    }),
     max: config.max
   });
 
   return {
     allowed: true,
-    remaining,
+    remaining: lowestRemaining,
     resetAt
   };
 }

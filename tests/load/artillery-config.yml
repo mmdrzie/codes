@@ -1,0 +1,260 @@
+# Artillery Load Testing Configuration
+# Targets: 10,000 requests/second, 95th percentile < 200ms latency, error rate < 0.1%
+
+config:
+  target: 'http://localhost:3000'
+  phases:
+    - name: Warm up
+      duration: 60
+      arrivalRate: 10
+    - name: Ramp up load
+      duration: 120
+      arrivalRate: 100
+    - name: Sustained load
+      duration: 300
+      arrivalRate: 1000
+    - name: Peak load
+      duration: 120
+      arrivalRate: 2000
+    - name: Spike test
+      duration: 60
+      arrivalRate: 5000
+    - name: Recovery
+      duration: 120
+      arrivalRate: 100
+  payload:
+    path: './tests/data/user-payloads.csv'
+    fields:
+      - 'email'
+      - 'password'
+      - 'firstName'
+      - 'lastName'
+  ensure:
+    # Performance assertions
+    - p95: 200 # 95th percentile response time under 200ms
+    - max: 1000 # Maximum response time under 1000ms
+    - error_rate: 0.001 # Error rate less than 0.1%
+  plugins:
+    apickli: {}
+    expect: {}
+    metrics-by-endpoint: {}
+
+scenarios:
+  - name: "User Registration Flow"
+    weight: 25
+    flow:
+      - post:
+          url: '/api/auth/register'
+          headers:
+            'Content-Type': 'application/json'
+            'User-Agent': 'LoadTestBot/1.0'
+          json:
+            email: '{{ $randomEmail }}'
+            password: 'SecurePass123!'
+            firstName: '{{ $randomFirstName }}'
+            lastName: '{{ $randomLastName }}'
+          expect:
+            - statusCode: 201
+            - contentType: 'application/json'
+          capture:
+            - json: '$.token'
+              as: 'authToken'
+      - think: 2
+      - get:
+          url: '/api/users/profile'
+          headers:
+            'Authorization': 'Bearer {{ authToken }}'
+          expect:
+            - statusCode: 200
+            - contentType: 'application/json'
+
+  - name: "User Login and Profile Access"
+    weight: 30
+    flow:
+      - post:
+          url: '/api/auth/login'
+          headers:
+            'Content-Type': 'application/json'
+            'User-Agent': 'LoadTestBot/1.0'
+          json:
+            email: '{{ $dataElement.email }}'
+            password: '{{ $dataElement.password }}'
+          expect:
+            - statusCode: 200
+            - contentType: 'application/json'
+          capture:
+            - json: '$.token'
+              as: 'authToken'
+      - think: 1
+      - get:
+          url: '/api/users/profile'
+          headers:
+            'Authorization': 'Bearer {{ authToken }}'
+          expect:
+            - statusCode: 200
+            - contentType: 'application/json'
+      - think: 5
+      - put:
+          url: '/api/users/profile'
+          headers:
+            'Content-Type': 'application/json'
+            'Authorization': 'Bearer {{ authToken }}'
+          json:
+            firstName: '{{ $randomFirstName }}'
+            lastName: '{{ $randomLastName }}'
+            email: '{{ $randomEmail }}'
+          expect:
+            - statusCode: 200
+            - contentType: 'application/json'
+
+  - name: "Product Search and Browse"
+    weight: 20
+    flow:
+      - get:
+          url: '/api/products'
+          headers:
+            'User-Agent': 'LoadTestBot/1.0'
+          qs:
+            limit: 20
+            page: 1
+          expect:
+            - statusCode: 200
+            - contentType: 'application/json'
+      - think: 3
+      - get:
+          url: '/api/products/search'
+          headers:
+            'User-Agent': 'LoadTestBot/1.0'
+          qs:
+            q: '{{ $randomString(5) }}'
+            category: '{{ $randomArrayElement(["electronics", "clothing", "books", "home", "sports"]) }}'
+            limit: 10
+          expect:
+            - statusCode: 200
+            - contentType: 'application/json'
+      - think: 2
+      - get:
+          url: '/api/products/{{ $randomInt(1, 1000) }}'
+          headers:
+            'User-Agent': 'LoadTestBot/1.0'
+          expect:
+            - statusCode: 200
+            - contentType: 'application/json'
+
+  - name: "Shopping Cart Operations"
+    weight: 15
+    flow:
+      - get:
+          url: '/api/auth/login'
+          headers:
+            'Content-Type': 'application/json'
+            'User-Agent': 'LoadTestBot/1.0'
+          json:
+            email: '{{ $dataElement.email }}'
+            password: '{{ $dataElement.password }}'
+          expect:
+            - statusCode: 200
+            - contentType: 'application/json'
+          capture:
+            - json: '$.token'
+              as: 'authToken'
+      - think: 1
+      - post:
+          url: '/api/cart/items'
+          headers:
+            'Content-Type': 'application/json'
+            'Authorization': 'Bearer {{ authToken }}'
+          json:
+            productId: '{{ $randomInt(1, 1000) }}'
+            quantity: '{{ $randomInt(1, 5) }}'
+          expect:
+            - statusCode: 201
+            - contentType: 'application/json'
+      - think: 2
+      - get:
+          url: '/api/cart'
+          headers:
+            'Authorization': 'Bearer {{ authToken }}'
+          expect:
+            - statusCode: 200
+            - contentType: 'application/json'
+      - think: 3
+      - put:
+          url: '/api/cart/items/{{ $randomInt(1, 100) }}'
+          headers:
+            'Content-Type': 'application/json'
+            'Authorization': 'Bearer {{ authToken }}'
+          json:
+            quantity: '{{ $randomInt(2, 8) }}'
+          expect:
+            - statusCode: 200
+            - contentType: 'application/json'
+
+  - name: "Admin Panel Operations"
+    weight: 10
+    flow:
+      - post:
+          url: '/api/auth/login'
+          headers:
+            'Content-Type': 'application/json'
+            'User-Agent': 'LoadTestBot/1.0'
+          json:
+            email: 'admin@example.com'
+            password: 'admin_password'
+          expect:
+            - statusCode: 200
+            - contentType: 'application/json'
+          capture:
+            - json: '$.token'
+              as: 'adminToken'
+      - think: 1
+      - get:
+          url: '/api/admin/users'
+          headers:
+            'Authorization': 'Bearer {{ adminToken }}'
+            'User-Agent': 'LoadTestBot/1.0'
+          qs:
+            limit: 50
+            page: 1
+          expect:
+            - statusCode: 200
+            - contentType: 'application/json'
+      - think: 2
+      - get:
+          url: '/api/admin/analytics'
+          headers:
+            'Authorization': 'Bearer {{ adminToken }}'
+            'User-Agent': 'LoadTestBot/1.0'
+          expect:
+            - statusCode: 200
+            - contentType: 'application/json'
+
+# Custom hooks for advanced functionality
+before:
+  loop:
+    - post:
+        url: '/api/auth/register'
+        headers:
+          'Content-Type': 'application/json'
+        json:
+          email: 'test+{{ $randomString(8) }}@example.com'
+          password: 'SecurePass123!'
+          firstName: '{{ $randomFirstName }}'
+          lastName: '{{ $randomLastName }}'
+        expect:
+          - statusCode: 201
+
+after:
+  post:
+    url: '/api/reports/load-test-results'
+    headers:
+      'Content-Type': 'application/json'
+    json:
+      testId: '{{ $processEnvironment.TEST_ID || "load-test" }}'
+      timestamp: '{{ $timestampISO8601 }}'
+      results:
+        p95Latency: '{{ stats.latency.percentiles.95 }}'
+        maxLatency: '{{ stats.latency.max }}'
+        errorRate: '{{ stats.codes["400"] || 0 }}%'
+        totalRequests: '{{ stats.requests.total }}'
+        throughput: '{{ stats.rps.mean }}'

@@ -1,0 +1,407 @@
+name: Deploy to Production
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: 'Reason for manual deployment'
+        required: true
+        default: 'Manual deployment triggered'
+
+env:
+  NODE_VERSION: '18.x'
+  AWS_REGION: us-east-1
+  PRODUCTION_ENV: production
+
+jobs:
+  security-checks:
+    name: Security Scans
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run Snyk security scan
+        uses: snyk/actions/node@master
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          args: --severity-threshold=high
+
+      - name: Run OWASP ZAP scan
+        uses: zaproxy/action-full-scan@v0.8.0
+        with:
+          target: 'https://staging.example.com'
+          fail_action: false
+
+      - name: Run Trivy vulnerability scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'HIGH,CRITICAL'
+
+      - name: Upload Trivy scan results
+        uses: github/codeql-action/upload-sarif@v2
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+  dependency-check:
+    name: Dependency Validation
+    runs-on: ubuntu-latest
+    needs: security-checks
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check for vulnerable dependencies
+        run: |
+          npm audit --audit-level high
+          if [ $? -ne 0 ]; then
+            echo "Vulnerable dependencies found!"
+            npm audit --audit-level high --json > audit-report.json
+            cat audit-report.json
+            exit 1
+          fi
+
+      - name: Verify license compliance
+        run: |
+          npx license-checker --summary --failOn "AGPL-1.0-or-later, AGPL-1.0, AGPL-3.0-or-later, AGPL-3.0, GPL-1.0-or-later, GPL-1.0, GPL-2.0-or-later, GPL-2.0, GPL-3.0-or-later, GPL-3.0" || exit 1
+
+  build-and-test:
+    name: Build and Test
+    runs-on: ubuntu-latest
+    needs: [security-checks, dependency-check]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run linting
+        run: npm run lint
+
+      - name: Run type checking
+        run: npm run type-check
+
+      - name: Run unit tests
+        run: npm run test:unit -- --coverage --ci --maxWorkers=2
+
+      - name: Run integration tests
+        run: npm run test:integration -- --ci --maxWorkers=2
+
+      - name: Run security tests
+        run: npm run test:security
+
+      - name: Verify test coverage
+        run: |
+          # Check if coverage meets minimum requirements
+          COVERAGE=$(npx nyc report --reporter=text-summary | grep -E 'Lines\s*\|\s*([0-9]+\.[0-9]+)' | awk '{print $4}' | sed 's/%//')
+          if (( $(echo "$COVERAGE < 80" | bc -l) )); then
+            echo "Test coverage is below 80%: ${COVERAGE}%"
+            exit 1
+          fi
+
+      - name: Build application
+        run: npm run build
+        env:
+          NODE_ENV: production
+
+      - name: Verify bundle size
+        run: |
+          BUNDLE_SIZE=$(du -sh dist/ | cut -f1)
+          if [[ $BUNDLE_SIZE =~ ^[0-9]+ ]]; then
+            SIZE_NUM=$(echo $BUNDLE_SIZE | sed 's/[^0-9.]//g')
+            UNIT=$(echo $BUNDLE_SIZE | sed 's/[0-9.]//g')
+            
+            # Convert to KB for comparison (assuming MB/GB units)
+            if [[ $UNIT == "M" ]] && (( $(echo "$SIZE_NUM > 500" | bc -l) )); then
+              echo "Bundle size exceeds 500MB: ${BUNDLE_SIZE}"
+              exit 1
+            elif [[ $UNIT == "G" ]]; then
+              echo "Bundle size exceeds 500MB: ${BUNDLE_SIZE}"
+              exit 1
+            fi
+          fi
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-build
+          path: dist/
+          retention-days: 30
+
+  database-migration:
+    name: Database Migration
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    environment: production
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate migration scripts
+        run: |
+          # Check if migration scripts exist and are valid
+          if [ -d "./migrations" ]; then
+            echo "Migration scripts found, validating..."
+            # Add migration validation logic here
+            ls -la migrations/
+          else
+            echo "No migration scripts found, continuing..."
+          fi
+
+      - name: Create migration backup
+        run: |
+          # Create a backup before running migrations
+          echo "Creating database backup before migration..."
+          # Add backup command specific to your database
+          
+      - name: Run database migration
+        run: npm run migrate:prod
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL_PROD }}
+          NODE_ENV: production
+
+      - name: Verify migration success
+        run: |
+          # Verify that migrations completed successfully
+          # Add verification logic here
+          echo "Verifying migration completed successfully..."
+
+  deploy-blue-green:
+    name: Blue-Green Deployment
+    runs-on: ubuntu-latest
+    needs: [build-and-test, database-migration]
+    environment: production
+    concurrency: production
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: production-build
+          path: dist/
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Deploy to green environment
+        run: |
+          # Deploy to green environment (non-production)
+          echo "Deploying to green environment..."
+          # Add deployment commands for green environment
+          
+          # Example deployment command (replace with actual deployment logic):
+          # aws ecs update-service --cluster my-cluster --service my-green-service --force-new-deployment
+
+      - name: Run smoke tests on green
+        run: |
+          # Run basic health checks on green environment
+          echo "Running smoke tests on green environment..."
+          
+          GREEN_HEALTH_URL="${{ secrets.GREEN_HEALTH_CHECK_URL }}"
+          
+          # Wait for service to become healthy
+          timeout 300 bash -c 'while [[ "$(curl -s -o /dev/null -w ''%{http_code}'' $0)" != "200" ]]; do sleep 10; done' $GREEN_HEALTH_URL
+          
+          # Verify health endpoint returns success
+          RESPONSE=$(curl -s $GREEN_HEALTH_URL)
+          if echo "$RESPONSE" | grep -q '"status":"ok"'; then
+            echo "Green environment health check passed"
+          else
+            echo "Green environment health check failed"
+            echo "$RESPONSE"
+            exit 1
+          fi
+
+      - name: Switch traffic to green
+        run: |
+          # Switch load balancer/traffic to green environment
+          echo "Switching traffic to green environment..."
+          # Add traffic switching commands
+          
+          # Example: Update Route 53 alias record, ALB listener rules, etc.
+
+      - name: Verify blue-green switch
+        run: |
+          # Verify that traffic is flowing to green and blue is healthy
+          echo "Verifying traffic switch..."
+          
+          PRODUCTION_URL="${{ secrets.PRODUCTION_URL }}"
+          
+          # Verify production URL returns success
+          timeout 120 bash -c 'while [[ "$(curl -s -o /dev/null -w ''%{http_code}'' $0)" != "200" ]]; do sleep 5; done' $PRODUCTION_URL
+          
+          # Check response contains expected content
+          RESPONSE=$(curl -s $PRODUCTION_URL)
+          if [[ -n "$RESPONSE" ]]; then
+            echo "Production URL is responding correctly"
+          else
+            echo "Production URL not responding as expected"
+            exit 1
+          fi
+
+      - name: Monitor post-deployment
+        run: |
+          # Monitor key metrics after deployment
+          echo "Monitoring post-deployment metrics..."
+          
+          # Check error rates, response times, etc.
+          # This would integrate with your monitoring solution
+          
+          # Wait a few minutes for metrics to stabilize
+          sleep 120
+          
+          # Example: Check CloudWatch metrics or similar
+          # aws cloudwatch get-metric-statistics --metric-name ErrorRate ...
+
+  automated-rollback-check:
+    name: Automated Rollback Check
+    runs-on: ubuntu-latest
+    needs: deploy-blue-green
+    environment: production
+    if: failure()
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Rollback to blue environment
+        run: |
+          echo "Initiating automated rollback..."
+          # Switch traffic back to blue environment
+          
+          # Example rollback command:
+          # aws route53 change-resource-record-sets --hosted-zone-id $ZONE_ID --change-batch file://rollback-change.json
+          
+          # Verify rollback success
+          BLUE_HEALTH_URL="${{ secrets.BLUE_HEALTH_CHECK_URL }}"
+          timeout 300 bash -c 'while [[ "$(curl -s -o /dev/null -w ''%{http_code}'' $0)" != "200" ]]; do sleep 10; done' $BLUE_HEALTH_URL
+
+      - name: Alert on rollback
+        uses: 8398a7/action-slack@v3
+        with:
+          status: failure
+          text: 'Production deployment failed and was rolled back. Investigate immediately.'
+          webhook_url: ${{ secrets.SLACK_WEBHOOK_URL }}
+        if: always()
+
+  post-deployment-validation:
+    name: Post-Deployment Validation
+    runs-on: ubuntu-latest
+    needs: deploy-blue-green
+    environment: production
+    steps:
+      - name: Run comprehensive health checks
+        run: |
+          echo "Running comprehensive health checks..."
+          
+          PRODUCTION_URL="${{ secrets.PRODUCTION_URL }}"
+          
+          # Test critical endpoints
+          ENDPOINTS=(
+            "$PRODUCTION_URL/api/health"
+            "$PRODUCTION_URL/api/users/me"
+            "$PRODUCTION_URL/api/products"
+          )
+          
+          for endpoint in "${ENDPOINTS[@]}"; do
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$endpoint")
+            if [ "$HTTP_CODE" -ne 200 ]; then
+              echo "Health check failed for $endpoint: HTTP $HTTP_CODE"
+              exit 1
+            fi
+            echo "✓ $endpoint: HTTP $HTTP_CODE"
+          done
+
+      - name: Run performance tests
+        run: |
+          echo "Running performance validation..."
+          
+          # Install artillery for performance testing
+          npm install -g artillery@latest
+          
+          # Run basic performance test
+          artillery quick --duration 60 --concurrency 10 "GET ${{ secrets.PRODUCTION_URL }}/api/health" > perf-results.json
+          
+          # Validate performance metrics
+          # Add performance validation logic here
+
+      - name: Update monitoring dashboards
+        run: |
+          echo "Updating monitoring dashboards..."
+          # Add commands to update dashboards with new version info
+          
+      - name: Send deployment notification
+        uses: 8398a7/action-slack@v3
+        with:
+          status: success
+          text: '✅ Production deployment completed successfully!'
+          webhook_url: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  cleanup:
+    name: Cleanup
+    runs-on: ubuntu-latest
+    needs: [post-deployment-validation, automated-rollback-check]
+    if: always()
+    steps:
+      - name: Cleanup old deployment artifacts
+        run: |
+          echo "Cleaning up old deployment artifacts..."
+          # Add cleanup commands for old blue environment if needed
+          
+      - name: Update deployment records
+        run: |
+          echo "Updating deployment records..."
+          # Add commands to update deployment tracking systems

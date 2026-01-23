@@ -16,7 +16,7 @@ import {
   securityEnhancementMiddleware,
   ensureSecurityInitialization 
 } from './src/lib/security-enhancements';
-import { logger } from './src/lib/logger';
+import SecureLogger from './src/utils/logger';
 import { isPublicRoute, isProtectedRoute } from './src/config/routes';
 import { HardenedAuthService } from './src/services/auth/hardened-auth-service';
 import crypto from 'crypto';
@@ -86,7 +86,7 @@ export async function middleware(req: NextRequest) {
 
     // Block requests with suspicious patterns
     if (!validateRequestForSuspiciousPatterns(req)) {
-      logger.warn('Suspicious request blocked', {
+      SecureLogger.warn('Suspicious request blocked', {
         pathname,
         method: req.method,
         ip: getClientIp(req),
@@ -114,7 +114,7 @@ export async function middleware(req: NextRequest) {
           
           if (recaptchaResult.success) {
             // ReCAPTCHA verified, allow request to proceed
-            logger.info('Rate-limited request allowed via reCAPTCHA verification', {
+            SecureLogger.info('Rate-limited request allowed via reCAPTCHA verification', {
               pathname,
               ip: getClientIp(req),
               recaptchaScore: recaptchaResult.score,
@@ -122,7 +122,7 @@ export async function middleware(req: NextRequest) {
             });
           } else {
             // ReCAPTCHA verification failed
-            logger.warn('ReCAPTCHA verification failed for rate-limited request', {
+            SecureLogger.warn('ReCAPTCHA verification failed for rate-limited request', {
               pathname,
               ip: getClientIp(req),
               error: recaptchaResult.error
@@ -142,7 +142,7 @@ export async function middleware(req: NextRequest) {
           }
         } else {
           // No reCAPTCHA token provided, return challenge
-          logger.warn('Rate limit exceeded for public route, reCAPTCHA challenge required', {
+          SecureLogger.warn('Rate limit exceeded for public route, reCAPTCHA challenge required', {
             pathname,
             ip: getClientIp(req),
           });
@@ -175,7 +175,7 @@ export async function middleware(req: NextRequest) {
       const authResult = await checkAuthentication(req);
       
       if (!authResult.valid) {
-        logger.warn('Unauthorized access attempt', {
+        SecureLogger.warn('Unauthorized access attempt', {
           pathname,
           ip: getClientIp(req),
           userAgent: req.headers.get('user-agent'),
@@ -207,7 +207,7 @@ export async function middleware(req: NextRequest) {
         const mfaVerified = await checkMFAVerification(req, authResult.payload?.userId);
         
         if (!mfaVerified) {
-          logger.warn('MFA required but not verified for high-value route', {
+          SecureLogger.warn('MFA required but not verified for high-value route', {
             pathname,
             userId: authResult.payload?.userId,
             ip: getClientIp(req),
@@ -247,7 +247,7 @@ export async function middleware(req: NextRequest) {
           );
           
           if (!sessionValidation.isValid) {
-            logger.warn('Session binding validation failed', {
+            SecureLogger.warn('Session binding validation failed', {
               userId: authContext.userId,
               ip: currentIp,
               userAgent: currentUserAgent,
@@ -296,7 +296,7 @@ export async function middleware(req: NextRequest) {
     }
 
     // Log the request
-    logger.info('Request processed', {
+    SecureLogger.info('Request processed', {
       method: req.method,
       path: pathname,
       requestId,
@@ -309,7 +309,7 @@ export async function middleware(req: NextRequest) {
     // Log performance metrics
     const duration = Date.now() - startTime;
     if (duration > 1000) { // Log slow requests
-      logger.warn('Slow request detected', {
+      SecureLogger.warn('Slow request detected', {
         pathname: req.nextUrl.pathname,
         method: req.method,
         duration,
@@ -319,7 +319,7 @@ export async function middleware(req: NextRequest) {
 
     return response;
   } catch (error) {
-    logger.error('Middleware error', { 
+    SecureLogger.error('Middleware error', { 
       error: (error as Error).message, 
       pathname,
       ip: getClientIp(req),
@@ -421,7 +421,7 @@ async function checkAuthentication(request: NextRequest): Promise<{ valid: boole
     
     return { valid: false, error: authResult.error || 'Authentication failed' };
   } catch (error) {
-    logger.error('Authentication check failed', { error: (error as Error).message });
+    SecureLogger.error('Authentication check failed', { error: (error as Error).message });
     return { valid: false, error: 'Authentication check failed' };
   }
 }

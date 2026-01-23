@@ -9,7 +9,8 @@ import {
   addSecurityHeaders,
   sanitizeErrorMessage,
   validateCryptoRequirements,
-  validateSecretsConfiguration
+  validateSecretsConfiguration,
+  verifyRecaptcha
 } from './src/lib/security-middleware';
 import { 
   securityEnhancementMiddleware,
@@ -99,6 +100,68 @@ export async function middleware(req: NextRequest) {
 
     // Check if route is public (no authentication required)
     const isPublic = isPublicRoute(pathname);
+
+    // Apply rate limiting to public routes
+    if (isPublic) {
+      const rateLimitResponse = await applyEnhancedRateLimiting(req);
+      if (rateLimitResponse) {
+        // Rate limit exceeded - check for reCAPTCHA token
+        const recaptchaToken = req.headers.get('x-recaptcha-token') || req.nextUrl.searchParams.get('recaptcha');
+        
+        if (recaptchaToken) {
+          // Verify reCAPTCHA token
+          const recaptchaResult = await verifyRecaptcha(recaptchaToken, getClientIp(req));
+          
+          if (recaptchaResult.success) {
+            // ReCAPTCHA verified, allow request to proceed
+            logger.info('Rate-limited request allowed via reCAPTCHA verification', {
+              pathname,
+              ip: getClientIp(req),
+              recaptchaScore: recaptchaResult.score,
+              recaptchaAction: recaptchaResult.action
+            });
+          } else {
+            // ReCAPTCHA verification failed
+            logger.warn('ReCAPTCHA verification failed for rate-limited request', {
+              pathname,
+              ip: getClientIp(req),
+              error: recaptchaResult.error
+            });
+            
+            return new NextResponse(JSON.stringify({
+              error: 'Rate limit exceeded',
+              message: 'Security verification failed. Please try again.',
+              code: 'RATE_LIMIT_RECAPTCHA_FAILED'
+            }), {
+              status: 429,
+              headers: {
+                'Content-Type': 'application/json',
+                'Retry-After': '60' // Retry after 60 seconds
+              }
+            });
+          }
+        } else {
+          // No reCAPTCHA token provided, return challenge
+          logger.warn('Rate limit exceeded for public route, reCAPTCHA challenge required', {
+            pathname,
+            ip: getClientIp(req),
+          });
+          
+          return new NextResponse(JSON.stringify({
+            error: 'Rate limit exceeded',
+            message: 'Security verification required',
+            code: 'RATE_LIMIT_CHALLENGE_REQUIRED',
+            challenge: 'recaptcha_required'
+          }), {
+            status: 429,
+            headers: {
+              'Content-Type': 'application/json',
+              'Retry-After': '60' // Retry after 60 seconds
+            }
+          });
+        }
+      }
+    }
 
     // Initialize default auth context (fail closed)
     let authContext: AuthContext = {

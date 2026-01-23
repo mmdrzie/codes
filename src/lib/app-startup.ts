@@ -6,6 +6,7 @@
 import { logger } from './logger';
 import { SecurityInitializer } from './security-init';
 import { SecurityMonitor } from './security-monitoring';
+import { initRedis, redisHealthCheck, performRedisRecovery, configureRedisForProduction } from './redis-config';
 
 export class AppStartup {
   private static started = false;
@@ -25,6 +26,34 @@ export class AppStartup {
     });
 
     try {
+      // Configure Redis for production use with persistence and failover
+      configureRedisForProduction();
+
+      // Initialize Redis with enhanced configuration
+      initRedis();
+      
+      logger.info('Redis initialization completed');
+
+      // Perform Redis health check
+      const healthCheck = await redisHealthCheck();
+      
+      logger.info('Redis health check completed', {
+        healthy: healthCheck.healthy,
+        details: healthCheck.details
+      });
+
+      // Perform Redis recovery if needed
+      if (!healthCheck.healthy) {
+        logger.warn('Redis is not healthy, performing recovery...');
+        const recoveryResult = await performRedisRecovery();
+        
+        logger.info('Redis recovery completed', {
+          success: recoveryResult.success,
+          recoveredItems: recoveryResult.recoveredItems,
+          errors: recoveryResult.errors
+        });
+      }
+
       // Initialize security components
       await SecurityInitializer.initialize();
       

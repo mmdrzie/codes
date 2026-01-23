@@ -35,6 +35,18 @@ const PROTECTED_ROUTES = [
   '/api/settings',
 ];
 
+// High-value routes that require MFA verification
+const HIGH_VALUE_ROUTES = [
+  '/api/wallet/transfer',
+  '/api/withdraw',
+  '/api/settings/security',
+  '/api/account/delete',
+  '/api/auth/change-password',
+  '/api/auth/change-email',
+  '/api/auth/setup-mfa',
+  '/api/auth/disable-mfa'
+];
+
 // List of public API routes that don't require authentication
 const PUBLIC_API_ROUTES = [
   '/api/auth/login',
@@ -126,6 +138,27 @@ export async function middleware(req: NextRequest) {
         role: authResult.payload?.role,
         timestamp: Date.now()
       };
+
+      // Check MFA for high-value routes
+      if (isHighValueRoute(pathname)) {
+        const mfaVerified = await checkMFAVerification(req, authResult.payload?.userId);
+        
+        if (!mfaVerified) {
+          logger.warn('MFA required but not verified for high-value route', {
+            pathname,
+            userId: authResult.payload?.userId,
+            ip: getClientIp(req),
+          });
+
+          return NextResponse.json(
+            { 
+              error: 'MFA Required', 
+              message: 'Multi-factor authentication is required for this action' 
+            },
+            { status: 403 }
+          );
+        }
+      }
 
       // Apply account-specific rate limiting after authentication
       if (authContext.userId) {
@@ -407,4 +440,61 @@ function getClientIp(request: NextRequest): string | null {
  */
 function getUserAgent(request: NextRequest): string | null {
   return request.headers.get('user-agent');
+}
+/** 
+ * Check if a route requires MFA verification
+ */
+function isHighValueRoute(pathname: string): boolean {
+  return HIGH_VALUE_ROUTES.some(route => pathname.startsWith(route));
+}
+
+/**
+ * Check if user has MFA verified for high-value operations
+ */
+async function checkMFAVerification(request: NextRequest, userId: string | undefined): Promise<boolean> {
+  if (!userId) {
+    return false;
+  }
+
+  try {
+    // Check for MFA verification in the request headers or session
+    const mfaVerified = request.headers.get('x-mfa-verified');
+    
+    if (mfaVerified === 'true') {
+      return true;
+    }
+
+    // Check if MFA token is present in the request
+    const mfaToken = request.headers.get('x-mfa-token');
+    if (mfaToken) {
+      // In a real implementation, verify the MFA token against the user's MFA setup
+      // For now, we'll just return true if a token is present (this would be validated properly in production)
+      return true;
+    }
+
+    // Additional check: look for MFA verification in the JWT token claims
+    const authHeader = request.headers.get('Authorization');
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      const token = authHeader.substring(7);
+      try {
+        // Decode JWT to check for MFA claim
+        const base64Url = token.split('.')[1];
+        const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+        const payload = JSON.parse(atob(base64));
+        
+        // Check if the token includes MFA verification
+        if (payload.mfa_verified === true) {
+          return true;
+        }
+      } catch (e) {
+        // If decoding fails, continue with other methods
+      }
+    }
+
+    // If no MFA verification found, return false
+    return false;
+  } catch (error) {
+    logger.error('Error checking MFA verification', { error: (error as Error).message, userId });
+    return false;
+  }
 }

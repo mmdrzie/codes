@@ -1,6 +1,7 @@
 import { logger } from '@/lib/logger';
 import crypto from 'crypto';
 import { SecurityMonitor } from '@/lib/security-monitoring';
+import * as sodium from 'libsodium-wrappers';
 
 // Dynamically import OQS when needed
 let oqsModule: any = null;
@@ -10,18 +11,21 @@ let initializationPromise: Promise<void> | null = null;
 // Add startup invariant check
 const PQ_ENABLED: boolean = true;
 
-// Initialize OQS asynchronously
-async function initializeOQS(): Promise<void> {
+// Initialize both OQS and Sodium asynchronously
+async function initializeLibraries(): Promise<void> {
   if (initializationPromise) {
     return initializationPromise;
   }
   
   initializationPromise = (async () => {
     try {
+      // Initialize libsodium first
+      await sodium.ready;
+      
       // Try to load the OQS module
       oqsModule = await import('@oqs/node');
       isOqsAvailable = true;
-      logger.info('OQS module loaded successfully');
+      logger.info('OQS and libsodium modules loaded successfully');
       
       // Verify the invariant
       if (PQ_ENABLED !== true) {
@@ -29,10 +33,10 @@ async function initializeOQS(): Promise<void> {
         process.exit(1);
       }
     } catch (error) {
-      logger.error('OQS module not available - CRITICAL SECURITY FAILURE: Post-quantum cryptography unavailable', { error: (error as Error).message });
+      logger.error('OQS or libsodium module not available - CRITICAL SECURITY FAILURE: Post-quantum cryptography unavailable', { error: (error as Error).message });
       
       // FAIL HARD - Do not allow fallback to simulated crypto under ANY circumstances
-      logger.error('CRITICAL: Production environment requires OQS module. Terminating process.');
+      logger.error('CRITICAL: Production environment requires OQS and libsodium modules. Terminating process.');
       process.exit(1);  // Always terminate, regardless of environment
     }
   })();
@@ -128,8 +132,8 @@ export class PQCryptoService {
     classicalPrivateKey: Uint8Array;
   }> {
     try {
-      // Initialize OQS - this will throw if OQS is not available
-      await initializeOQS();
+      // Initialize both OQS and libsodium - this will throw if they're not available
+      await initializeLibraries();
       
       // Runtime guard: ensure we're using pure PQ crypto
       assertPurePQCryptoUsage('generateHybridKeyPair');
@@ -146,28 +150,10 @@ export class PQCryptoService {
       
       kex.free(); // Free resources
       
-      // Generate X25519 key pair (classical)
-      const { publicKey: classicalPublicKey, privateKey: classicalPrivateKey } = crypto.generateKeyPairSync('x25519', {
-        publicKeyEncoding: { type: 'spki', format: 'pem' },
-        privateKeyEncoding: { type: 'pkcs8', format: 'pem' }
-      });
-      
-      // Convert PEM to raw bytes for consistency
-      const classicalPubRaw = crypto.createPublicKey({
-        key: classicalPublicKey,
-        format: 'pem',
-        type: 'spki'
-      }).export({ type: 'spki', format: 'der' });
-      
-      const classicalPrivRaw = crypto.createPrivateKey({
-        key: classicalPrivateKey,
-        format: 'pem',
-        type: 'pkcs8'
-      }).export({ type: 'pkcs8', format: 'der' });
-      
-      // Extract raw keys (last 32 bytes for x25519)
-      const extractedClassicalPublicKey = classicalPubRaw.subarray(-32);
-      const extractedClassicalPrivateKey = classicalPrivRaw.subarray(-32);
+      // Generate Ed25519 key pair using libsodium for constant-time operations
+      const ed25519Keypair = sodium.crypto_sign_keypair();
+      const classicalPublicKey = ed25519Keypair.publicKey;
+      const classicalPrivateKey = ed25519Keypair.privateKey;
       
       // Monitor the key generation
       await SecurityMonitor.logEvent(
@@ -177,7 +163,7 @@ export class PQCryptoService {
           metadata: { 
             keyType: 'hybrid',
             pq_alg: 'kyber768',
-            classical_alg: 'x25519',
+            classical_alg: 'ed25519',
             is_real_oqs: isOqsAvailable
           }
         },
@@ -187,8 +173,8 @@ export class PQCryptoService {
       return {
         pqPublicKey,
         pqPrivateKey,
-        classicalPublicKey: extractedClassicalPublicKey,
-        classicalPrivateKey: extractedClassicalPrivateKey
+        classicalPublicKey,
+        classicalPrivateKey
       };
     } catch (error) {
       logger.error('Failed to generate hybrid key pair - CRITICAL SECURITY FAILURE', { error: (error as Error).message });
@@ -217,8 +203,8 @@ export class PQCryptoService {
     classicalPrivateKey: Uint8Array
   ): Promise<Uint8Array> {
     try {
-      // Initialize OQS - this will throw if OQS is not available
-      await initializeOQS();
+      // Initialize both OQS and libsodium - this will throw if they're not available
+      await initializeLibraries();
       
       let pqSignature: Uint8Array;
       
@@ -230,13 +216,8 @@ export class PQCryptoService {
       
       sig.free(); // Free resources
       
-      // Generate classical Ed25519 signature
-      const ed25519Key = crypto.createPrivateKey({
-        key: classicalPrivateKey,
-        format: 'der',
-        type: 'pkcs8'
-      });
-      const classicalSignature = crypto.sign(null, message, ed25519Key);
+      // Generate classical Ed25519 signature using libsodium for constant-time operations
+      const classicalSignature = sodium.crypto_sign_detached(message, classicalPrivateKey);
       
       // Combine signatures (in a real implementation, use proper hybrid signature scheme)
       const combinedSignature = new Uint8Array(pqSignature.length + classicalSignature.length);
@@ -287,8 +268,8 @@ export class PQCryptoService {
     classicalPublicKey: Uint8Array
   ): Promise<boolean> {
     try {
-      // Initialize OQS - this will throw if OQS is not available
-      await initializeOQS();
+      // Initialize both OQS and libsodium - this will throw if they're not available
+      await initializeLibraries();
       
       // In a real implementation, we'd verify both PQ and classical signatures
       // For now, split and verify both parts
@@ -317,16 +298,10 @@ export class PQCryptoService {
       const pqSignature = signature.slice(0, pqSignatureEnd);
       const classicalSignature = signature.slice(pqSignatureEnd);
       
-      // Verify classical signature - ENFORCE this check
+      // Verify classical signature using libsodium for constant-time operations - ENFORCE this check
       let classicalValid = false;
       try {
-        const ed25519Key = crypto.createPublicKey({
-          key: classicalPublicKey,
-          format: 'der',
-          type: 'spki'
-        });
-        
-        classicalValid = crypto.verify(null, message, ed25519Key, classicalSignature);
+        classicalValid = sodium.crypto_sign_verify_detached(classicalSignature, message, classicalPublicKey);
       } catch (classicalError) {
         logger.error('Classical signature verification error', { error: (classicalError as Error).message });
         classicalValid = false;

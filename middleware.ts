@@ -277,8 +277,34 @@ export async function middleware(req: NextRequest) {
     // Create response and add security headers
     const response = NextResponse.next();
     
-    // Add advanced security headers with dynamic CSP nonce
+    // Generate nonce for CSP
+    const nonce = crypto.randomBytes(16).toString('base64');
+    
+    // Add advanced security headers (without CSP - we'll add it separately)
     addAdvancedSecurityHeaders(response);
+    
+    // Add report-to header for CSP violations
+    response.headers.set('Report-To', JSON.stringify({
+      group: 'csp-endpoint',
+      max_age: 10886400,
+      endpoints: [{ url: '/api/csp-report' }]
+    }));
+    
+    // Add Content Security Policy with dynamic nonce
+    const isDev = process.env.NODE_ENV === 'development';
+    const cspHeader = [
+      "default-src 'self'",
+      `script-src 'self' 'nonce-${nonce}'`,
+      "style-src 'self' 'unsafe-inline'",
+      "img-src 'self' https:",
+      "font-src 'self' https:",
+      "connect-src 'self' https: wss:",
+      "frame-ancestors 'none'",
+      "upgrade-insecure-requests",
+      "block-all-mixed-content"
+    ].join('; ');
+    
+    response.headers.set('Content-Security-Policy', cspHeader);
     
     // Add request ID for tracking
     const requestId = `req_${Date.now()}_${crypto.randomUUID()}`;

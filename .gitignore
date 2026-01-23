@@ -2,59 +2,132 @@
 # Dependencies
 node_modules/
 
-# Logs and temp files
-*.log
-*.tmp
-
 # Environment
 .env
 .env.local
 *.env.*
 
-# Editors
-.vscode/
-.idea/
+# Logs and temp files
+*.log
+*.tmp
 
 # Build artifacts
 dist/
 build/
 target/
 
-# Python specific
+# Python
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
-.Python
-env/
-venv/
-.venv/
-.venv.bak/
-pip-log.txt
-pip-delete-this-directory.txt
-
-# Coverage reports
-.coverage
-coverage/
-htmlcov/
-
-# Testing
-.nyc_output/
-coverage-final.json
-
-# OS generated files
-.DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Thumbs.db
-
-# Temporary files
-*.tmp
-*.temp
-*.bak
-*.swp
-*~
+*.py~
+*.py.class
+*.py.backup
+*.py.swp
+*.py.swo
+*.py~.*
+*.py~~
+*.py.bak
+*.py.tmp
+*.py.temp
+*.py.cache
+*.py.compiled
+*.py.bin
+*.py.obj
+*.py.out
+*.py.dll
+*.py.so
+*.py.a
+*.py.lib
+*.py.exp
+*.py.ilk
+*.py.pdb
+*.py.dSYM
+*.py.dSYM/
+*.py.o
+*.py.obj
+*.py.class
+*.py.jar
+*.py.war
+*.py.ear
+*.py.zip
+*.py.tar
+*.py.gz
+*.py.bz2
+*.py.xz
+*.py.7z
+*.py.rar
+*.py.zst
+*.py.lz4
+*.py.lzh
+*.py.cab
+*.py.arj
+*.py.rpm
+*.py.deb
+*.py.Z
+*.py.lz
+*.py.lzo
+*.py.tar.gz
+*.py.tar.bz2
+*.py.tar.xz
+*.py.tar.zst
+*.py.png
+*.py.jpg
+*.py.jpeg
+*.py.bmp
+*.py.gif
+*.py.webm
+*.py.ico
+*.py.svg
+*.py.tiff
+*.py.tif
+*.py.webp
+*.py.avif
+*.py.apng
+*.py.jfif
+*.py.pjp
+*.py.pjpeg
+*.py.heic
+*.py.heif
+*.py.jpe
+*.py.jfi
+*.py.jp2
+*.py.j2k
+*.py.jpf
+*.py.jpx
+*.py.jpm
+*.py.mjp2
+*.py.cur
+*.py.ani
+*.py.fav
+*.py.icns
+*.py.pbm
+*.py.pgm
+*.py.ppm
+*.py.pnm
+*.py.webp
+*.py.avif
+*.py.apng
+*.py.jfif
+*.py.pjp
+*.py.pjpeg
+*.py.heic
+*.py.heif
+*.py.jpe
+*.py.jfi
+*.py.jp2
+*.py.j2k
+*.py.jpf
+*.py.jpx
+*.py.jpm
+*.py.mjp2
+*.py.cur
+*.py.ani
+*.py.fav
+*.py.icns
+*.py.pbm
+*.py.pgm
+*.py.ppm
+*.py.pnm
 ```

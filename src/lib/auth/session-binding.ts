@@ -22,7 +22,21 @@ export class SessionBindingValidator {
   private readonly strictMode: boolean;
 
   constructor() {
-    this.sessionSalt = process.env.SESSION_BINDING_SALT || this.generateSalt();
+    // Require salt from environment - FAIL if not present
+    if (!process.env.SESSION_BINDING_SALT) {
+      throw new Error(
+        'CRITICAL: SESSION_BINDING_SALT environment variable is required. ' +
+        'Generate one with: openssl rand -hex 32'
+      );
+    }
+    
+    this.sessionSalt = process.env.SESSION_BINDING_SALT;
+    
+    // Validate salt format
+    if (this.sessionSalt.length !== 64) { // 32 bytes = 64 hex chars
+      throw new Error('SESSION_BINDING_SALT must be 64 hexadecimal characters (32 bytes)');
+    }
+    
     this.idleTimeoutMs = parseInt(process.env.SESSION_IDLE_TIMEOUT_MS || '900000', 10); // 15 minutes default
     this.absoluteTimeoutMs = parseInt(process.env.SESSION_ABSOLUTE_TIMEOUT_MS || '28800000', 10); // 8 hours default
     this.strictMode = process.env.SESSION_BINDING_STRICT_MODE === 'true';
@@ -31,13 +45,7 @@ export class SessionBindingValidator {
     this.redis = Redis.fromEnv();
   }
 
-  /**
-   * Generate a secure salt for hashing
-   */
-  private generateSalt(): string {
-    const crypto = require('crypto') as typeof import('crypto');
-    return crypto.randomBytes(32).toString('hex');
-  }
+
 
   /**
    * Hash IP address with salt for privacy

@@ -1,3 +1,1 @@
-```ts
-
-```
+Nothing needs to be added to the .gitignore file based on the provided changes. The listed files (route.ts, middleware.ts, rateLimit.ts, test-security-fixes.ts) are all source code files that should be tracked in version control.

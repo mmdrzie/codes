@@ -180,8 +180,14 @@ export async function checkRateLimit(
           };
         }
       } catch (error) {
-        logger.error('Redis error in rate limit check', { error: (error as Error).message });
-        // Fallback to in-memory if Redis fails
+        logger.critical('Redis error in rate limit check', { 
+          error: (error as Error).message,
+          identifier: check.identifier,
+          type
+        });
+        
+        // Fail closed - return 503 error
+        throw new Error('Service temporarily unavailable due to Redis connectivity issues');
       }
     }
   }
@@ -201,7 +207,9 @@ export async function checkRateLimit(
           record = redisData as RateLimitRecord;
         }
       } catch (error) {
-        logger.error('Redis get error', { error: (error as Error).message });
+        logger.critical('Redis get error', { error: (error as Error).message });
+        // Fail closed - throw error
+        throw new Error('Service temporarily unavailable due to Redis connectivity issues');
       }
     }
 
@@ -274,7 +282,9 @@ export async function checkRateLimit(
           record = redisData as RateLimitRecord;
         }
       } catch (error) {
-        logger.error('Redis get error', { error: (error as Error).message });
+        logger.critical('Redis get error', { error: (error as Error).message });
+        // Fail closed - throw error
+        throw new Error('Service temporarily unavailable due to Redis connectivity issues');
       }
     }
 
@@ -297,9 +307,9 @@ export async function checkRateLimit(
       try {
         await redis.setex(check.key, Math.floor(config.window / 1000), record);
       } catch (error) {
-        logger.error('Redis set error', { error: (error as Error).message });
-        // Fallback to in-memory
-        requestStore.set(check.key, record);
+        logger.critical('Redis set error', { error: (error as Error).message });
+        // Fail closed - throw error
+        throw new Error('Service temporarily unavailable due to Redis connectivity issues');
       }
     } else {
       requestStore.set(check.key, record);

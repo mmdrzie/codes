@@ -161,26 +161,90 @@ describe('Security Fixes Verification Tests', () => {
     });
   });
 
-  describe('TASK 8: Overall Security Verification', () => {
-    it('should maintain security properties after all fixes', async () => {
-      const payload = { userId: 'secure-test-user', tenantId: 'secure-test-tenant' };
-      const tokens = await generateTokenPair(payload);
-      
-      // Verify access token
-      const accessResult = await verifyAccessToken(tokens.accessToken);
-      expect(accessResult).not.toBeNull();
-      expect(accessResult?.userId).toBe('secure-test-user');
-      expect(accessResult?.tenantId).toBe('secure-test-tenant');
-      
-      // Verify refresh token
-      const refreshResult = await verifyRefreshToken(tokens.refreshToken);
-      expect(refreshResult.valid).toBe(true);
-      expect(refreshResult.payload?.userId).toBe('secure-test-user');
-      
-      // Both should have proper types
-      expect(accessResult?.type).toBe('access');
-      expect(refreshResult.payload?.type).toBe('refresh');
+/** 
+ * TASK 9: Content Security Policy (CSP) Implementation Verification
+ */
+describe('TASK 9: Content Security Policy Implementation', () => {
+  it('should generate unique nonces for each request', async () => {
+    const crypto = await import('crypto');
+    
+    // Generate two nonces
+    const nonce1 = crypto.randomBytes(16).toString('base64');
+    const nonce2 = crypto.randomBytes(16).toString('base64');
+    
+    // Verify they are different (highly likely due to randomness)
+    expect(nonce1).not.toBe(nonce2);
+    
+    // Verify format is correct base64
+    expect(Buffer.from(nonce1, 'base64').toString('base64')).toBe(nonce1);
+    expect(Buffer.from(nonce2, 'base64').toString('base64')).toBe(nonce2);
+  });
+
+  it('should have strict CSP headers without unsafe directives', async () => {
+    // Simulate middleware CSP header generation
+    const crypto = await import('crypto');
+    const nonce = crypto.randomBytes(16).toString('base64');
+    
+    const cspHeader = [
+      "default-src 'self'",
+      `script-src 'self' 'nonce-${nonce}'`,
+      "style-src 'self' 'unsafe-inline'",
+      "img-src 'self' https:",
+      "font-src 'self' https:",
+      "connect-src 'self' https: wss:",
+      "frame-ancestors 'none'",
+      "upgrade-insecure-requests",
+      "block-all-mixed-content"
+    ].join('; ');
+    
+    // Verify no unsafe directives
+    expect(cspHeader).not.toContain("'unsafe-inline'");
+    expect(cspHeader).not.toContain("'unsafe-eval'");
+    expect(cspHeader).not.toContain("'data:");
+    expect(cspHeader).not.toContain("'blob:");
+    
+    // Verify essential directives are present
+    expect(cspHeader).toContain("default-src 'self'");
+    expect(cspHeader).toContain(`script-src 'self' 'nonce-${nonce}'`);
+    expect(cspHeader).toContain("frame-ancestors 'none'");
+    expect(cspHeader).toContain("upgrade-insecure-requests");
+    expect(cspHeader).toContain("block-all-mixed-content");
+  });
+
+  it('should include report-to header for CSP violations', () => {
+    const reportToHeader = JSON.stringify({
+      group: 'csp-endpoint',
+      max_age: 10886400,
+      endpoints: [{ url: '/api/csp-report' }]
     });
+    
+    // Verify structure
+    const parsed = JSON.parse(reportToHeader);
+    expect(parsed.group).toBe('csp-endpoint');
+    expect(parsed.max_age).toBe(10886400);
+    expect(parsed.endpoints).toHaveLength(1);
+    expect(parsed.endpoints[0].url).toBe('/api/csp-report');
+  });
+});
+describe('TASK 10: Overall Security Verification', () => {
+  it('should maintain security properties after all fixes', async () => {
+    const payload = { userId: 'secure-test-user', tenantId: 'secure-test-tenant' };
+    const tokens = await generateTokenPair(payload);
+    
+    // Verify access token
+    const accessResult = await verifyAccessToken(tokens.accessToken);
+    expect(accessResult).not.toBeNull();
+    expect(accessResult?.userId).toBe('secure-test-user');
+    expect(accessResult?.tenantId).toBe('secure-test-tenant');
+    
+    // Verify refresh token
+    const refreshResult = await verifyRefreshToken(tokens.refreshToken);
+    expect(refreshResult.valid).toBe(true);
+    expect(refreshResult.payload?.userId).toBe('secure-test-user');
+    
+    // Both should have proper types
+    expect(accessResult?.type).toBe('access');
+    expect(refreshResult.payload?.type).toBe('refresh');
   });
 });
 

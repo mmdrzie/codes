@@ -1,8 +1,8 @@
 import { Redis } from 'ioredis';
+import { CryptoOperations } from './crypto/crypto-operations';
 import { logger } from './logger';
 import { SecurityMonitor } from './security-monitoring';
 import { SecurityEvent } from './security-monitoring';
-import { CryptoOperations } from './crypto/crypto-operations';
 
 interface SessionInfo {
   sessionId: string;
@@ -15,14 +15,14 @@ interface SessionInfo {
   tenantId: string;
 }
 
-export class SessionManager {
+export class SecureSessionManager {
   private redis: Redis;
   private cryptoOps: CryptoOperations;
   private readonly MAX_CONCURRENT_SESSIONS = parseInt(process.env.MAX_CONCURRENT_SESSIONS || '5', 10);
   private readonly SESSION_EXPIRATION_SECONDS = 60 * 60 * 24; // 24 hours
   private readonly MOBILE_USER_AGENT_REGEX = /mobile|android|iphone|ipad|phone|tablet|ios/i;
   private readonly MOBILE_IP_TOLERANCE_ENABLED = process.env.MOBILE_IP_TOLERANCE_ENABLED === 'true';
-  
+
   constructor(redisClient: Redis) {
     this.redis = redisClient;
     this.cryptoOps = new CryptoOperations();

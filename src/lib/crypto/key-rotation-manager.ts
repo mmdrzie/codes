@@ -1,6 +1,7 @@
 import { KMSClient } from '@aws-sdk/client-kms';
 import { CryptoOperations } from './crypto-operations';
 import { KeyVersioning } from './key-versioning';
+import { createHmac } from 'crypto';
 
 interface KeyConfig {
   type: string;
@@ -54,9 +55,20 @@ export class KeyRotationManager {
   }
 
   /**
+   * Generates a tenant-bound, environment-bound, and epoch-bound key
+   */
+  private generateBoundKey(tenantId: string, environment: string, keyType: string, epoch: number): string {
+    // Create a unique key derived from tenant, environment, and epoch
+    const keyMaterial = `${tenantId}_${environment}_${keyType}_${epoch}_${process.env.KEY_DERIVATION_SECRET || 'default-secret'}`;
+    const hmac = createHmac('sha256', process.env.KEY_DERIVATION_SECRET || 'default-secret');
+    hmac.update(keyMaterial);
+    return hmac.digest('hex');
+  }
+
+  /**
    * Rotates keys for a specific type
    */
-  async rotateKeys(keyType: string): Promise<boolean> {
+  async rotateKeys(keyType: string, tenantId?: string): Promise<boolean> {
     try {
       const config = this.keyConfigs.get(keyType);
       if (!config) {
@@ -67,7 +79,7 @@ export class KeyRotationManager {
       const newKeyId = await this.createKeyInKMS(config);
 
       // Update key version
-      await this.keyVersioning.updateCurrentKeyVersion(keyType, newKeyId);
+      await this.keyVersioning.updateCurrentKeyVersion(keyType, newKeyId, tenantId);
 
       console.log(`[KEY_ROTATION] Successfully rotated ${keyType} key. New key ID: ${newKeyId}`);
 
@@ -114,43 +126,49 @@ export class KeyRotationManager {
   /**
    * Performs a manual key rotation
    */
-  async manualRotate(keyType: string): Promise<boolean> {
-    console.log(`[KEY_ROTATION] Manual rotation initiated for ${keyType}`);
-    return await this.rotateKeys(keyType);
+  async manualRotate(keyType: string, tenantId?: string): Promise<boolean> {
+    console.log(`[KEY_ROTATION] Manual rotation initiated for ${keyType}${tenantId ? ` for tenant ${tenantId}` : ''}`);
+    return await this.rotateKeys(keyType, tenantId);
   }
 
   /**
    * Handles key compromise by immediately rotating affected keys
    */
-  async handleKeyCompromise(keyType: string): Promise<boolean> {
-    console.warn(`[KEY_ROTATION] Key compromise detected for ${keyType}, initiating emergency rotation`);
+  async handleKeyCompromise(keyType: string, tenantId?: string): Promise<boolean> {
+    console.warn(`[KEY_ROTATION] Key compromise detected for ${keyType}${tenantId ? ` for tenant ${tenantId}` : ''}, initiating emergency rotation`);
     
     // Log the compromise event
-    console.log(`[SECURITY_EVENT] Key compromise reported for type: ${keyType}, timestamp: ${new Date().toISOString()}`);
+    console.log(`[SECURITY_EVENT] Key compromise reported for type: ${keyType}${tenantId ? `, tenant: ${tenantId}` : ''}, timestamp: ${new Date().toISOString()}`);
     
     // Rotate the key immediately
-    const success = await this.rotateKeys(keyType);
+    const success = await this.rotateKeys(keyType, tenantId);
     
     if (success) {
-      console.log(`[KEY_ROTATION] Emergency rotation completed for ${keyType}`);
+      console.log(`[KEY_ROTATION] Emergency rotation completed for ${keyType}${tenantId ? ` for tenant ${tenantId}` : ''}`);
     } else {
-      console.error(`[KEY_ROTATION] Emergency rotation failed for ${keyType}`);
+      console.error(`[KEY_ROTATION] Emergency rotation failed for ${keyType}${tenantId ? ` for tenant ${tenantId}` : ''}`);
     }
     
     return success;
   }
 
   /**
-   * Gets the current key for a specific type
+   * Gets the current key for a specific type with tenant binding
    */
-  getCurrentKey(keyType: string): Promise<string | null> {
-    return this.keyVersioning.getCurrentKeyVersion(keyType);
+  async getCurrentKey(keyType: string, tenantId?: string, environment?: string): Promise<string | null> {
+    if (tenantId && environment) {
+      // Return a tenant-bound and environment-bound key
+      const epoch = await this.keyVersioning.getKeyEpoch(keyType, tenantId);
+      return this.generateBoundKey(tenantId, environment, keyType, epoch);
+    }
+    
+    return await this.keyVersioning.getCurrentKeyVersion(keyType, tenantId);
   }
 
   /**
    * Gets all historical keys for a specific type
    */
-  getHistoricalKeys(keyType: string): Promise<string[]> {
-    return this.keyVersioning.getHistoricalKeyVersions(keyType);
+  getHistoricalKeys(keyType: string, tenantId?: string): Promise<string[]> {
+    return this.keyVersioning.getHistoricalKeyVersions(keyType, tenantId);
   }
 }

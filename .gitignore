@@ -1,72 +1,36 @@
 ```
-# Dependencies
-node_modules/
-
-# Environment
-.env
-.env.local
-.env.*
-
-# Logs and temp files
-*.log
-*.tmp
-
-# Build artifacts
+# Compiled and build artifacts
+*.pyc
+__pycache__/
+*.o
+*.obj
 dist/
 build/
 target/
 
-# Cache directories
-.cache/
-.node_cache/
-.npm/
-.yarn/
+# Dependencies
+node_modules/
+venv/
+.venv/
+.env
+.env.local
+*.env.*
 
-# IDE files
+# Logs and temp files
+*.log
+*.tmp
+*.swp
+
+# Editors
 .vscode/
 .idea/
-*.swp
-*.swo
-
-# OS files
-.DS_Store
-Thumbs.db
 
 # Coverage reports
 coverage/
 htmlcov/
 .coverage
 
-# Python specific
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-.Python
-*.so
-*.egg-info/
-.eggs/
-
-# Java specific
-*.class
-*.jar
-*.war
-*.ear
-*.nar
-target/
-.gradle/
-build/
-
-# C/C++ specific
-*.o
-*.a
-*.so
-*.dll
-*.exe
-*.out
-*.obj
-
-# Compressed files
+# Compression files
 *.zip
 *.gz
 *.tar

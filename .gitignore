@@ -1,2 +1,4 @@
-# Security review reports
-QUANTUMIQ_SECURITY_REVIEW_REPORT.md
+```ts
+// No build artifacts, dependencies, or temporary files detected in changes
+// Only source code modifications present
+```

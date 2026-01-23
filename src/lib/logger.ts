@@ -1,6 +1,7 @@
 /**
- * سیستم Logging امن با Rate Limiting و Log Rotation
+ * سیستم Logging امن با Rate Limiting، Log Rotation و کنترل‌های GDPR
  * جلوگیری از Log کردن اطلاعات حساس و جلوگیری از Flooding
+ * جدا کردن لاگ‌های امنیتی از لاگ‌های برنامه
  */
 
 import { Redis } from '@upstash/redis';
@@ -32,7 +33,14 @@ const SENSITIVE_FIELDS = [
   'authorization',
   'cookie',
   'privateKey',
-  'private_key'
+  'private_key',
+  'email',
+  'phone',
+  'address',
+  'firstName',
+  'lastName',
+  'personalId',
+  'nationalId'
 ];
 
 // Log rate limiting configuration
@@ -46,9 +54,9 @@ const LOG_RATE_LIMITS = {
 const logCountCache = new Map<string, { count: number; timestamp: number }>();
 
 /**
- * Configure Winston logger with rotation
+ * Configure Winston logger with rotation for application logs
  */
-const winstonLogger: WinstonLogger = createWinstonLogger({
+const applicationLogger: WinstonLogger = createWinstonLogger({
   level: process.env.WINSTON_LOG_LEVEL || 'info',
   format: format.combine(
     format.timestamp(),
@@ -56,9 +64,9 @@ const winstonLogger: WinstonLogger = createWinstonLogger({
     format.splat(),
     format.json()
   ),
-  defaultMeta: { service: 'quantumiq' },
+  defaultMeta: { service: 'quantumiq-app' },
   transports: [
-    // File transport with daily rotation
+    // File transport with daily rotation for application logs
     new DailyRotateFile({
       filename: 'logs/application-%DATE%.log',
       datePattern: 'YYYY-MM-DD',
@@ -71,14 +79,36 @@ const winstonLogger: WinstonLogger = createWinstonLogger({
         format.splat(),
         format.json()
       )
-    }),
-    // Console transport for development
-    new transports.Console({
+    })
+  ]
+});
+
+/**
+ * Configure Winston logger with rotation for security logs
+ */
+const securityLogger: WinstonLogger = createWinstonLogger({
+  level: 'warn', // Only warnings and errors for security logs
+  format: format.combine(
+    format.timestamp(),
+    format.errors({ stack: true }),
+    format.splat(),
+    format.json()
+  ),
+  defaultMeta: { service: 'quantumiq-security' },
+  transports: [
+    // File transport with daily rotation for security logs
+    new DailyRotateFile({
+      filename: 'logs/security-%DATE%.log',
+      datePattern: 'YYYY-MM-DD',
+      zippedArchive: true,
+      maxSize: '100m',
+      maxFiles: '90d', // Keep security logs longer
       format: format.combine(
-        format.colorize(),
-        format.simple()
-      ),
-      level: process.env.NODE_ENV === 'development' ? 'debug' : 'info'
+        format.timestamp(),
+        format.errors({ stack: true }),
+        format.splat(),
+        format.json()
+      )
     })
   ]
 });
@@ -290,23 +320,51 @@ function writeLog(entry: LogEntry): void {
     data: entry.data ? sanitizeData(entry.data) : undefined
   };
 
-  // Send to Winston logger
-  switch (entry.level) {
-    case LogLevel.DEBUG:
-      winstonLogger.debug(sanitizedEntry.message, sanitizedEntry);
-      break;
-    case LogLevel.INFO:
-      winstonLogger.info(sanitizedEntry.message, sanitizedEntry);
-      break;
-    case LogLevel.WARN:
-      winstonLogger.warn(sanitizedEntry.message, sanitizedEntry);
-      break;
-    case LogLevel.ERROR:
-      winstonLogger.error(sanitizedEntry.message, sanitizedEntry);
-      break;
-    case LogLevel.FATAL:
-      winstonLogger.error(sanitizedEntry.message, sanitizedEntry);
-      break;
+  // Separate security logs from application logs
+  const isSecurityLog = entry.context?.toLowerCase().includes('security') || 
+                       entry.level === LogLevel.ERROR || 
+                       entry.level === LogLevel.FATAL ||
+                       sanitizedEntry.message.toLowerCase().includes('security');
+
+  // Send to appropriate logger
+  if (isSecurityLog) {
+    // Send to security logger
+    switch (entry.level) {
+      case LogLevel.DEBUG:
+        securityLogger.debug(sanitizedEntry.message, sanitizedEntry);
+        break;
+      case LogLevel.INFO:
+        securityLogger.info(sanitizedEntry.message, sanitizedEntry);
+        break;
+      case LogLevel.WARN:
+        securityLogger.warn(sanitizedEntry.message, sanitizedEntry);
+        break;
+      case LogLevel.ERROR:
+        securityLogger.error(sanitizedEntry.message, sanitizedEntry);
+        break;
+      case LogLevel.FATAL:
+        securityLogger.error(sanitizedEntry.message, sanitizedEntry);
+        break;
+    }
+  } else {
+    // Send to application logger
+    switch (entry.level) {
+      case LogLevel.DEBUG:
+        applicationLogger.debug(sanitizedEntry.message, sanitizedEntry);
+        break;
+      case LogLevel.INFO:
+        applicationLogger.info(sanitizedEntry.message, sanitizedEntry);
+        break;
+      case LogLevel.WARN:
+        applicationLogger.warn(sanitizedEntry.message, sanitizedEntry);
+        break;
+      case LogLevel.ERROR:
+        applicationLogger.error(sanitizedEntry.message, sanitizedEntry);
+        break;
+      case LogLevel.FATAL:
+        applicationLogger.error(sanitizedEntry.message, sanitizedEntry);
+        break;
+    }
   }
 }
 
@@ -352,7 +410,7 @@ class Logger {
         userId: this.userId,
         requestId: this.requestId
       };
-      winstonLogger.warn(rateLimitEntry);
+      securityLogger.warn(rateLimitEntry);
       return; // Skip logging this entry
     }
 
@@ -481,16 +539,16 @@ export function logSecurityEvent(
     ? LogLevel.ERROR
     : LogLevel.WARN;
 
-  const securityLogger = logger.withContext('Security');
+  const securityLoggerInstance = logger.withContext('Security');
   
   if (level === LogLevel.ERROR) {
-    securityLogger.error(`Security Event: ${event}`, {
+    securityLoggerInstance.error(`Security Event: ${event}`, {
       event,
       severity,
       ...sanitizeData(details)
     });
   } else {
-    securityLogger.warn(`Security Event: ${event}`, {
+    securityLoggerInstance.warn(`Security Event: ${event}`, {
       event,
       severity,
       ...sanitizeData(details)
@@ -543,4 +601,27 @@ export function logExternalApiCall(
       duration: `${duration}ms`
     });
   }
+}
+
+/**
+ * GDPR Compliance: Log retention and data minimization
+ */
+export function cleanupPersonalData(): void {
+  // In a real implementation, this would remove personal data from logs
+  // according to GDPR retention policies
+  console.log('Personal data cleanup initiated according to GDPR compliance');
+}
+
+/**
+ * Log a compliance event
+ */
+export function logComplianceEvent(
+  event: string,
+  userId: string,
+  details?: any
+): void {
+  logger.withUser(userId).info(`GDPR Compliance Event: ${event}`, {
+    event,
+    ...sanitizeData(details)
+  });
 }

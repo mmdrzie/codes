@@ -5,6 +5,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import crypto from 'crypto';
 import { logger } from './logger';
+import { enhancedRateLimiter } from './enhanced-rate-limiter';
+import { integrityLog } from './integrity-log';
 
 // Security configuration
 const SECURITY_CONFIG = {
@@ -295,25 +297,70 @@ export async function applyEnhancedRateLimiting(
     `combo:${combinedId}`,
     ...(userIdHash ? [`user:${userIdHash}`] : [])
   ];
-  
-  // Check rate limits for all identifiers
+
+  // Check each identifier with adaptive rate limiting
   for (const id of identifiers) {
-    const isLimited = await checkRateLimit(id);
-    if (isLimited) {
+    // Apply adaptive rate limiting based on violation history
+    const rateLimitResult = await enhancedRateLimiter.applyAdaptiveRateLimit(
+      id,
+      {
+        windowMs: 15 * 60 * 1000, // 15 minutes
+        maxRequests: id.startsWith('ip:') ? 100 : id.startsWith('user:') ? 50 : 25
+      },
+      endpoint
+    );
+    
+    if (!rateLimitResult.allowed) {
+      // Log the rate limit violation
+      await integrityLog.logSecurityEvent('Rate limit exceeded', {
+        identifier: id,
+        endpoint,
+        clientIp,
+        userAgent
+      });
+      
       return new NextResponse('Rate limit exceeded', { status: 429 });
     }
   }
-  
+
+  // Check for anomaly patterns
+  const payloadAnomalyDetected = enhancedRateLimiter.detectPayloadAnomalies(await getRequestPayload(request));
+  if (payloadAnomalyDetected) {
+    // Log the anomaly
+    await integrityLog.logSecurityEvent('Payload anomaly detected', {
+      endpoint,
+      clientIp,
+      userAgent,
+      payloadSize: JSON.stringify(await getRequestPayload(request)).length
+    });
+    
+    // Detect the anomaly
+    await enhancedRateLimiter.detectAnomalies(
+      clientIp,
+      {
+        nonceAbuseThreshold: 10,
+        authFailureThreshold: 5,
+        payloadAnomalyThreshold: 3,
+        windowMs: 60 * 1000 // 1 minute window
+      },
+      'payload_anomaly'
+    );
+  }
+
   return null; // No rate limiting applied
 }
 
 /**
- * Simulated rate limit checking (replace with actual implementation)
+ * Helper function to get request payload (simplified)
  */
-async function checkRateLimit(identifier: string): Promise<boolean> {
-  // In a real implementation, this would check against Redis with sliding window algorithm
-  // For simulation, we'll return false (not limited)
-  return false;
+async function getRequestPayload(request: NextRequest): Promise<any> {
+  try {
+    // For Next.js middleware, we can't directly read the body
+    // In a real implementation, this would be handled differently
+    return {};
+  } catch (error) {
+    return {};
+  }
 }
 
 /**

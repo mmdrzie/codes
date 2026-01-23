@@ -406,8 +406,14 @@ export class PQCryptoService {
     senderClassicalPrivateKey: Uint8Array
   ): Promise<Uint8Array> {
     try {
-      // Initialize OQS - this will throw if OQS is not available
-      await initializeOQS();
+      // Initialize OQS if available
+      if (!oqsModule) {
+        await initializeLibraries();
+      }
+      
+      if (!isOqsAvailable) {
+        throw new Error('OQS is not available for post-quantum cryptography');
+      }
       
       let pqSharedSecret: Uint8Array;
       

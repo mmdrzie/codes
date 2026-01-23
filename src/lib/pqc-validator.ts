@@ -4,6 +4,9 @@
  */
 
 import { logger } from './logger';
+import { PQCryptoService } from '../services/crypto/pq-crypto-service';
+import { siemService } from './siem-integration';
+import { SecurityEventType } from './siem-integration';
 
 export class PQCValidator {
   private static isInitialized = false;
@@ -21,15 +24,17 @@ export class PQCValidator {
       // Check for other PQC library availability (like PQClean, liboqs-js, etc.)
       const otherPQCLibsAvailable = await this.checkOtherPQCLibraries();
       
-      // For demonstration purposes, we'll simulate the check
-      // In a real implementation, this would check for actual PQC libraries
-      this.pqcAvailable = oqsAvailable && otherPQCLibsAvailable;
+      // Check for hybrid signature capability
+      const hybridCapability = await this.checkHybridSignatureCapability();
+      
+      // Combine all checks
+      this.pqcAvailable = oqsAvailable && otherPQCLibsAvailable && hybridCapability;
       
       if (!this.pqcAvailable) {
         const errorMsg = 'Post-Quantum Cryptography libraries are not available. System failing closed.';
         logger.error(errorMsg);
         
-        // Log security event
+        // Log security event to SIEM
         await this.logSecurityEvent({
           eventType: 'PQC_UNAVAILABLE',
           severity: 'critical',
@@ -46,6 +51,14 @@ export class PQCValidator {
       return true;
     } catch (error) {
       logger.error('PQC validation failed', { error: (error as Error).message });
+      // Log the error to SIEM
+      await this.logSecurityEvent({
+        eventType: 'PQC_VALIDATION_FAILED',
+        severity: 'critical',
+        message: `PQC validation failed: ${(error as Error).message}`,
+        timestamp: new Date().toISOString(),
+        details: { error: (error as Error).message }
+      });
       throw error; // Re-throw to ensure system fails closed
     }
   }
@@ -55,16 +68,14 @@ export class PQCValidator {
    */
   private static async checkOQSAvailability(): Promise<boolean> {
     try {
-      // Attempt to import OQS bindings
-      // In a real implementation, this would actually try to load the library
-      // For now, we'll simulate the check
-      const hasOQS = this.simulateOQSLoad();
+      // Use the PQCryptoService to check if real OQS is supported
+      const isSupported = PQCryptoService.isRealPQSupported();
       
-      if (hasOQS) {
-        logger.info('OQS library available');
+      if (isSupported) {
+        logger.info('OQS library available and functional');
         return true;
       } else {
-        logger.warn('OQS library not available');
+        logger.warn('OQS library not available or not functional');
         return false;
       }
     } catch (error) {
@@ -78,24 +89,16 @@ export class PQCValidator {
    */
   private static async checkOtherPQCLibraries(): Promise<boolean> {
     try {
-      // Check for other PQC implementations
-      // This is a placeholder - in reality you'd check for specific libraries
-      const libraries = [
-        { name: 'liboqs', available: this.checkLibOQS() },
-        { name: 'PQClean', available: this.checkPQClean() },
-        { name: 'crystals-kyber', available: this.checkCrystalsKyber() },
-        { name: 'crystals-dilithium', available: this.checkCrystalsDilithium() }
-      ];
-
-      const availableLibs = libraries.filter(lib => lib.available);
+      // Get PQ status from the service
+      const pqStatus = PQCryptoService.getPQStatus();
       
-      if (availableLibs.length > 0) {
+      if (pqStatus.isAvailable && pqStatus.isRealPQ) {
         logger.info('PQC libraries available', { 
-          available: availableLibs.map(lib => lib.name) 
+          available: pqStatus.algorithms 
         });
         return true;
       } else {
-        logger.warn('No PQC libraries available');
+        logger.warn('No PQC libraries available or using simulated crypto');
         return false;
       }
     } catch (error) {
@@ -105,70 +108,46 @@ export class PQCValidator {
   }
 
   /**
-   * Simulates OQS loading (replace with actual implementation)
+   * Checks for hybrid signature capability (Ed25519 + SLH-DSA)
    */
-  private static simulateOQSLoad(): boolean {
-    // In a real implementation, this would try to actually load the OQS library
-    // For example: try { require('@open-quantum-safe/node'); return true; } catch(e) { return false; }
-    
-    // For now, check if a specific env var indicates OQS is available
-    return process.env.PQC_AVAILABLE === 'true' || process.env.NODE_ENV !== 'production';
-  }
-
-  /**
-   * Checks for liboqs availability
-   */
-  private static checkLibOQS(): boolean {
-    // Placeholder implementation
+  private static async checkHybridSignatureCapability(): Promise<boolean> {
     try {
-      // In a real implementation: return require('liboqs') !== undefined;
-      return process.env.LIBOQS_AVAILABLE === 'true';
+      // Try to generate and verify a hybrid signature to ensure the capability works
+      const testMessage = new TextEncoder().encode('test message for hybrid signature validation');
+      
+      // Generate a test key pair
+      const keyPair = await PQCryptoService.generateHybridKeyPair();
+      
+      // Generate a hybrid signature
+      const signature = await PQCryptoService.generateHybridSignature(
+        testMessage,
+        keyPair.pqPrivateKey,
+        keyPair.classicalPrivateKey
+      );
+      
+      // Verify the hybrid signature
+      const isValid = await PQCryptoService.verifyHybridSignature(
+        testMessage,
+        signature,
+        keyPair.pqPublicKey,
+        keyPair.classicalPublicKey
+      );
+      
+      if (isValid) {
+        logger.info('Hybrid signature capability confirmed');
+        return true;
+      } else {
+        logger.warn('Hybrid signature capability failed validation');
+        return false;
+      }
     } catch (error) {
+      logger.warn('Hybrid signature capability check failed', { error: (error as Error).message });
       return false;
     }
   }
 
   /**
-   * Checks for PQClean availability
-   */
-  private static checkPQClean(): boolean {
-    // Placeholder implementation
-    try {
-      // In a real implementation: return require('pqclean') !== undefined;
-      return process.env.PQCLEAN_AVAILABLE === 'true';
-    } catch (error) {
-      return false;
-    }
-  }
-
-  /**
-   * Checks for Crystals Kyber availability
-   */
-  private static checkCrystalsKyber(): boolean {
-    // Placeholder implementation
-    try {
-      // In a real implementation: return require('crystals-kyber') !== undefined;
-      return process.env.KYBER_AVAILABLE === 'true';
-    } catch (error) {
-      return false;
-    }
-  }
-
-  /**
-   * Checks for Crystals Dilithium availability
-   */
-  private static checkCrystalsDilithium(): boolean {
-    // Placeholder implementation
-    try {
-      // In a real implementation: return require('crystals-dilithium') !== undefined;
-      return process.env.DILITHIUM_AVAILABLE === 'true';
-    } catch (error) {
-      return false;
-    }
-  }
-
-  /**
-   * Logs security events
+   * Logs security events to SIEM
    */
   private static async logSecurityEvent(event: {
     eventType: string;
@@ -177,8 +156,43 @@ export class PQCValidator {
     timestamp: string;
     details?: any;
   }): Promise<void> {
-    // In a real implementation, this would send the event to a SIEM or security monitoring system
-    console.log('Security Event:', event);
+    try {
+      // Map our event type to SIEM event type
+      let siemEventType: SecurityEventType = SecurityEventType.SUSPICIOUS_ACTIVITY;
+      
+      switch (event.eventType) {
+        case 'PQC_UNAVAILABLE':
+          siemEventType = SecurityEventType.AUTH_FAILURE;
+          break;
+        case 'PQC_VALIDATION_FAILED':
+          siemEventType = SecurityEventType.AUTH_FAILURE;
+          break;
+        default:
+          siemEventType = SecurityEventType.SUSPICIOUS_ACTIVITY;
+      }
+      
+      // Determine severity
+      let siemSeverity: 'low' | 'medium' | 'high' | 'critical' = event.severity;
+      
+      // Emit to SIEM
+      await siemService.emitSecurityEvent({
+        event_type: siemEventType,
+        severity: siemSeverity,
+        ip_address: 'system',
+        user_agent: 'system',
+        route: 'security',
+        outcome: 'failure',
+        source: 'application',
+        details: {
+          original_event_type: event.eventType,
+          message: event.message,
+          ...event.details
+        }
+      });
+    } catch (error) {
+      logger.error('Failed to log security event to SIEM', { error: (error as Error).message });
+      // Don't throw here as it would cause a cascade failure
+    }
   }
 
   /**

@@ -14,8 +14,8 @@ export const ADVANCED_SECURITY_CONFIG = {
     // Production CSP - Strict policy
     production: {
       'default-src': "'self'",
-      'script-src': ["'self'", "'strict-dynamic'", "'unsafe-inline'"], // Only for initial load
-      'style-src': ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+      'script-src': ["'self'", "'strict-dynamic'", "'nonce-{{nonce}}'"],
+      'style-src': ["'self'", "'unsafe-hashes'"],
       'img-src': ["'self'", "data:", "blob:", "https:"],
       'font-src': ["'self'", "https://fonts.gstatic.com", "data:"],
       'connect-src': ["'self'", "https://*.quantumiq.com", "wss://*.quantumiq.com"],
@@ -28,8 +28,8 @@ export const ADVANCED_SECURITY_CONFIG = {
     // Development CSP - More permissive
     development: {
       'default-src': "'self'",
-      'script-src': ["'self'", "'unsafe-inline'", "'unsafe-eval'"],
-      'style-src': ["'self'", "'unsafe-inline'"],
+      'script-src': ["'self'", "'strict-dynamic'", "'nonce-{{nonce}}'"],
+      'style-src': ["'self'", "'unsafe-hashes'"],
       'img-src': ["'self'", "data:", "blob:", "https:", "http:"],
       'font-src': ["'self'", "https:", "http:", "data:"],
       'connect-src': ["'self'", "https:", "http:"],
@@ -89,9 +89,19 @@ export function createCspHeader(nonce: string, isProduction: boolean = process.e
   // Clone the policy object to avoid modifying the original
   const cspPolicy = { ...policy };
   
-  // Update script-src with the dynamic nonce
+  // Handle the script-src directive with nonce
   if (Array.isArray(cspPolicy['script-src'])) {
-    cspPolicy['script-src'] = [...cspPolicy['script-src'], `'nonce-${nonce}'`];
+    // Replace placeholder nonce or add the nonce to the array
+    const updatedSrc = cspPolicy['script-src'].map(src => 
+      typeof src === 'string' && src.includes('{{nonce}}') ? `'nonce-${nonce}'` : src
+    );
+    
+    // If nonce wasn't in the original policy, add it
+    if (!cspPolicy['script-src'].some(src => typeof src === 'string' && src.includes('{{nonce}}'))) {
+      cspPolicy['script-src'] = [...updatedSrc, `'nonce-${nonce}'`];
+    } else {
+      cspPolicy['script-src'] = updatedSrc;
+    }
   } else {
     cspPolicy['script-src'] = [cspPolicy['script-src'], `'nonce-${nonce}'`];
   }
@@ -152,6 +162,7 @@ export class SessionManager {
       userAgent: string;
       permissions?: string[];
       metadata?: Record<string, any>;
+      deviceFingerprint?: string; // New field for device fingerprinting
     }
   ): Promise<string> {
     const sessionId = crypto.randomUUID();
@@ -164,6 +175,7 @@ export class SessionManager {
       sessionId,
       ipAddress: sessionData.ipAddress,
       userAgent: sessionData.userAgent,
+      deviceFingerprint: sessionData.deviceFingerprint, // Added device fingerprint
       permissions: sessionData.permissions || [],
       metadata: sessionData.metadata || {},
       createdAt,
@@ -187,12 +199,13 @@ export class SessionManager {
   }
 
   /**
-   * Validates session with IP and User-Agent binding
+   * Validates session with IP, User-Agent, and device fingerprint binding
    */
   async validateSession(
     sessionId: string,
     currentIpAddress: string,
-    currentUserAgent: string
+    currentUserAgent: string,
+    currentDeviceFingerprint?: string // New parameter for device fingerprint
   ): Promise<{
     isValid: boolean;
     userId?: string;
@@ -257,6 +270,25 @@ export class SessionManager {
           userId: sessionData.userId,
           originalUserAgent: sessionData.userAgent,
           currentUserAgent,
+          timestamp: new Date()
+        });
+        
+        // Immediately invalidate the session
+        await this.invalidateSession(sessionId);
+        return { isValid: false };
+      }
+
+      // Validate Device Fingerprint binding if provided and enabled
+      if (currentDeviceFingerprint && sessionData.deviceFingerprint && sessionData.deviceFingerprint !== currentDeviceFingerprint) {
+        console.warn(`Device fingerprint binding violation detected for session ${sessionId}`);
+        
+        // Log security event
+        await this.logSecurityEvent({
+          eventType: 'session_binding_violation',
+          sessionId,
+          userId: sessionData.userId,
+          originalDeviceFingerprint: sessionData.deviceFingerprint,
+          currentDeviceFingerprint,
           timestamp: new Date()
         });
         

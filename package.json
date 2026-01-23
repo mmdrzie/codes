@@ -40,7 +40,9 @@
     "zod": "^4.2.1",
     "@oqs/node": "^0.7.0",
     "libsodium-wrappers": "^0.7.13",
-    "node-cron": "^3.0.3"
+    "node-cron": "^3.0.3",
+    "winston": "^3.11.0",
+    "winston-daily-rotate-file": "^5.0.0"
   },
   "devDependencies": {
     "@types/bcryptjs": "^2.4.6",

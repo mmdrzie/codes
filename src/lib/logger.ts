@@ -1,6 +1,11 @@
-/**\n * سیستم Logging امن با Rate Limiting\n * جلوگیری از Log کردن اطلاعات حساس و جلوگیری از Flooding\n */
+/**
+ * سیستم Logging امن با Rate Limiting و Log Rotation
+ * جلوگیری از Log کردن اطلاعات حساس و جلوگیری از Flooding
+ */
 
 import { Redis } from '@upstash/redis';
+import { createLogger as createWinstonLogger, transports, format, Logger as WinstonLogger } from 'winston';
+import DailyRotateFile from 'winston-daily-rotate-file';
 
 // Initialize Redis for log rate limiting
 const redis = process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN 
@@ -39,6 +44,44 @@ const LOG_RATE_LIMITS = {
 
 // Cache for tracking log counts in memory (fallback when Redis is unavailable)
 const logCountCache = new Map<string, { count: number; timestamp: number }>();
+
+/**
+ * Configure Winston logger with rotation
+ */
+const winstonLogger: WinstonLogger = createWinstonLogger({
+  level: process.env.WINSTON_LOG_LEVEL || 'info',
+  format: format.combine(
+    format.timestamp(),
+    format.errors({ stack: true }),
+    format.splat(),
+    format.json()
+  ),
+  defaultMeta: { service: 'quantumiq' },
+  transports: [
+    // File transport with daily rotation
+    new DailyRotateFile({
+      filename: 'logs/application-%DATE%.log',
+      datePattern: 'YYYY-MM-DD',
+      zippedArchive: true,
+      maxSize: '100m',
+      maxFiles: '30d',
+      format: format.combine(
+        format.timestamp(),
+        format.errors({ stack: true }),
+        format.splat(),
+        format.json()
+      )
+    }),
+    // Console transport for development
+    new transports.Console({
+      format: format.combine(
+        format.colorize(),
+        format.simple()
+      ),
+      level: process.env.NODE_ENV === 'development' ? 'debug' : 'info'
+    })
+  ]
+});
 
 /**
  * Check if log should be rate limited
@@ -242,31 +285,28 @@ function formatLogEntry(entry: LogEntry): string {
  * ذخیره Log (در production به external service ارسال شود)
  */
 function writeLog(entry: LogEntry): void {
-  const formatted = formatLogEntry(entry);
+  const sanitizedEntry = {
+    ...entry,
+    data: entry.data ? sanitizeData(entry.data) : undefined
+  };
 
-  // در development به console
-  if (process.env.NODE_ENV === 'development') {
-    switch (entry.level) {
-      case LogLevel.DEBUG:
-        console.debug(formatted);
-        break;
-      case LogLevel.INFO:
-        console.info(formatted);
-        break;
-      case LogLevel.WARN:
-        console.warn(formatted);
-        break;
-      case LogLevel.ERROR:
-      case LogLevel.FATAL:
-        console.error(formatted);
-        break;
-    }
-  }
-
-  // در production به logging service (مثل Sentry, LogRocket, etc.)
-  if (process.env.NODE_ENV === 'production') {
-    // TODO: ارسال به external logging service
-    // sendToLoggingService(entry);
+  // Send to Winston logger
+  switch (entry.level) {
+    case LogLevel.DEBUG:
+      winstonLogger.debug(sanitizedEntry.message, sanitizedEntry);
+      break;
+    case LogLevel.INFO:
+      winstonLogger.info(sanitizedEntry.message, sanitizedEntry);
+      break;
+    case LogLevel.WARN:
+      winstonLogger.warn(sanitizedEntry.message, sanitizedEntry);
+      break;
+    case LogLevel.ERROR:
+      winstonLogger.error(sanitizedEntry.message, sanitizedEntry);
+      break;
+    case LogLevel.FATAL:
+      winstonLogger.error(sanitizedEntry.message, sanitizedEntry);
+      break;
   }
 }
 
@@ -288,7 +328,7 @@ class Logger {
     this.requestId = requestId;
   }
 
-  private log(level: LogLevel, message: string, data?: any): void {
+  private async log(level: LogLevel, message: string, data?: any): Promise<void> {
     const entry: LogEntry = {
       timestamp: new Date().toISOString(),
       level,
@@ -298,6 +338,23 @@ class Logger {
       userId: this.userId,
       requestId: this.requestId
     };
+
+    // Check rate limiting
+    const rateLimited = await checkLogRateLimit(entry);
+    if (rateLimited) {
+      // Log rate limiting event itself
+      const rateLimitEntry: LogEntry = {
+        timestamp: new Date().toISOString(),
+        level: LogLevel.WARN,
+        message: 'Log rate limit exceeded',
+        data: { originalMessage: message },
+        context: 'LogRateLimit',
+        userId: this.userId,
+        requestId: this.requestId
+      };
+      winstonLogger.warn(rateLimitEntry);
+      return; // Skip logging this entry
+    }
 
     writeLog(entry);
   }

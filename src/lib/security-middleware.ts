@@ -317,6 +317,48 @@ async function checkRateLimit(identifier: string): Promise<boolean> {
 }
 
 /**
+ * Verifies reCAPTCHA token with Google's API
+ */
+export async function verifyRecaptcha(token: string, remoteip?: string): Promise<{ success: boolean; score?: number; action?: string; error?: string }> {
+  if (!process.env.RECAPTCHA_SECRET_KEY) {
+    logger.error('reCAPTCHA secret key not configured');
+    return { success: false, error: 'Server configuration error' };
+  }
+
+  try {
+    const formData = new FormData();
+    formData.append('secret', process.env.RECAPTCHA_SECRET_KEY);
+    formData.append('response', token);
+    if (remoteip) {
+      formData.append('remoteip', remoteip);
+    }
+
+    const response = await fetch('https://www.google.com/recaptcha/api/siteverify', {
+      method: 'POST',
+      body: formData,
+    });
+
+    const data = await response.json();
+
+    if (data.success) {
+      const threshold = parseFloat(process.env.RECAPTCHA_SCORE_THRESHOLD || '0.5');
+      if (data.score && data.score <= threshold) {
+        logger.warn('reCAPTCHA score below threshold', { score: data.score, threshold });
+        return { success: false, score: data.score, action: data.action, error: 'Score too low' };
+      }
+      
+      return { success: true, score: data.score, action: data.action };
+    } else {
+      logger.warn('reCAPTCHA verification failed', { errors: data['error-codes'] });
+      return { success: false, error: data['error-codes']?.join(', ') || 'Verification failed' };
+    }
+  } catch (error) {
+    logger.error('reCAPTCHA verification error', { error: (error as Error).message });
+    return { success: false, error: 'Network error during verification' };
+  }
+}
+
+/**
  * Sanitizes error messages to prevent information disclosure
  */
 export function sanitizeErrorMessage(error: unknown): string {

@@ -342,20 +342,20 @@ export class AMLEngine {
       }
 
       // Log the assessment for audit trail
-      await this.auditLogger.log({
-        level: 'AUDIT',
-        module: 'AML_ENGINE',
-        action: 'TRANSACTION_ASSESSMENT',
-        userId: transaction.userId,
-        details: {
-          transactionId: transaction.fromAccount, // Using account as proxy for transaction ID
+      await this.auditLogger.audit(
+        'TRANSACTION_ASSESSMENT',
+        {
+          module: 'AML_ENGINE',
+          transactionId: transaction.fromAccount,
           amount: transaction.amount,
           riskScore: totalRiskScore,
           recommendation,
           factors: riskFactors,
           flags: riskFlags
-        }
-      });
+        },
+        transaction.userId,
+        transaction.ipAddress
+      );
 
       logger.info('Transaction assessed by AML engine', {
         userId: transaction.userId,
@@ -556,18 +556,17 @@ export class AMLEngine {
       await this.redis.sadd(`user:sars:${userId}`, sarId);
       
       // Log the SAR generation
-      await this.auditLogger.log({
-        level: 'AUDIT',
-        module: 'AML_ENGINE',
-        action: 'SAR_GENERATED',
-        userId,
-        details: {
+      await this.auditLogger.audit(
+        'SAR_GENERATED',
+        {
+          module: 'AML_ENGINE',
           sarId,
           transactionIds,
           suspiciousActivities,
           deadline: new Date(deadline).toISOString()
-        }
-      });
+        },
+        userId
+      );
 
       logger.info('SAR generated successfully', {
         sarId,
@@ -637,17 +636,16 @@ export class AMLEngine {
       await this.redis.sadd(`user:ctrs:${userId}`, ctrId);
       
       // Log the CTR generation
-      await this.auditLogger.log({
-        level: 'AUDIT',
-        module: 'AML_ENGINE',
-        action: 'CTR_GENERATED',
-        userId,
-        details: {
+      await this.auditLogger.audit(
+        'CTR_GENERATED',
+        {
+          module: 'AML_ENGINE',
           ctrId,
           transactionCount: transactions.length,
           totalAmount
-        }
-      });
+        },
+        userId
+      );
 
       logger.info('CTR generated successfully', {
         ctrId,

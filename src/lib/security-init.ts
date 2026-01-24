@@ -152,8 +152,8 @@ export class SecurityInitializer {
       
       // CRITICAL: In production, SIEM failure should cause startup failure
       if (process.env.NODE_ENV === 'production') {
-        logger.error('CRITICAL: Production environment requires functional SIEM. Terminating process.');
-        process.exit(1);
+        logger.error('CRITICAL: Production environment requires functional SIEM. Returning error.');
+        throw new Error('SIEM connectivity test failed: Production environment requires functional SIEM');
       }
       
       throw new Error(`SIEM connectivity test failed: ${(error as Error).message}`);

@@ -1,75 +1,37 @@
-```
+```ts
 # Dependencies
 node_modules/
 
-# Build artifacts
+# Build outputs
 dist/
 build/
-target/
+*.js.map
+*.tsbuildinfo
 
 # Environment
 .env
 .env.local
 *.env.*
 
-# Python
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-.Python
-env/
-venv/
-.venv/
-.ENV
-.python-version
-
-# Logs
-*.log
-
-# Coverage
-.coverage
-coverage/
-htmlcov/
-
-# IDE
+# Editors
 .vscode/
 .idea/
 *.swp
 *.swo
+
+# Logs
+*.log
+
+# Temporary files
 *.tmp
+*.temp
 
 # OS
 .DS_Store
 Thumbs.db
 
-# Testing
-.mypy_cache/
-.pytest_cache/
-.nyc_output/
+# Coverage
 coverage/
-
-# Compressed
-*.zip
-*.gz
-*.tar
-*.tgz
-*.bz2
-*.xz
-*.7z
-*.rar
-*.zst
-*.lz4
-*.lzh
-*.cab
-*.arj
-*.rpm
-*.deb
-*.Z
-*.lz
-*.lzo
-*.tar.gz
-*.tar.bz2
-*.tar.xz
-*.tar.zst
+.nyc_output/
+istanbul/
 ```

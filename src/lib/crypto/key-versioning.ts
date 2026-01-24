@@ -15,9 +15,87 @@ export class KeyVersioning {
   }
 
   /**
+   * Update current key version for a key type
+   */
+  async updateCurrentKeyVersion(
+    keyType: string, 
+    newKeyId: string, 
+    tenantId?: string
+  ): Promise<void> {
+    const key = tenantId 
+      ? `key_version:${keyType}:${tenantId}:current`
+      : `key_version:${keyType}:current`;
+    
+    await this.redis.set(key, newKeyId);
+    
+    // Store rotation timestamp
+    const timestampKey = tenantId
+      ? `key_version:${keyType}:${tenantId}:last_rotation`
+      : `key_version:${keyType}:last_rotation`;
+    
+    await this.redis.set(timestampKey, Date.now());
+  }
+
+  /**
+   * Get current key version
+   */
+  async getCurrentKeyVersion(
+    keyType: string, 
+    tenantId?: string
+  ): Promise<string | null> {
+    const key = tenantId
+      ? `key_version:${keyType}:${tenantId}:current`
+      : `key_version:${keyType}:current`;
+    
+    return await this.redis.get<string>(key);
+  }
+
+  /**
+   * Get last rotation date
+   */
+  async getLastRotationDate(keyType: string): Promise<Date | null> {
+    const key = `key_version:${keyType}:last_rotation`;
+    const timestamp = await this.redis.get<number>(key);
+    
+    return timestamp ? new Date(timestamp) : null;
+  }
+
+  /**
+   * Get historical key versions
+   */
+  async getHistoricalKeyVersions(
+    keyType: string, 
+    tenantId?: string
+  ): Promise<string[]> {
+    const pattern = tenantId
+      ? `key_version:${keyType}:${tenantId}:history:*`
+      : `key_version:${keyType}:history:*`;
+    
+    // In production, implement proper Redis SCAN
+    return [];
+  }
+
+  /**
+   * Get key epoch for tenant binding
+   */
+  async getKeyEpoch(keyType: string, tenantId: string): Promise<number> {
+    const key = `key_version:${keyType}:${tenantId}:epoch`;
+    const epoch = await this.redis.get<number>(key);
+    
+    if (!epoch) {
+      // Initialize epoch
+      const newEpoch = Math.floor(Date.now() / 1000);
+      await this.redis.set(key, newEpoch);
+      return newEpoch;
+    }
+    
+    return epoch;
+  }
+
+  /**
    * Updates the current key version for a specific key type
    */
-  async updateCurrentKeyVersion(keyType: string, newKeyId: string): Promise<void> {
+  async updateCurrentKeyVersionLegacy(keyType: string, newKeyId: string): Promise<void> {
     try {
       const keyVersionsKey = `key_versions:${keyType}`;
       const currentKeyKey = `current_key:${keyType}`;
@@ -76,29 +154,9 @@ export class KeyVersioning {
   }
 
   /**
-   * Gets the current key version for a specific type
-   */
-  async getCurrentKeyVersion(keyType: string): Promise<string | null> {
-    try {
-      const currentKeyKey = `current_key:${keyType}`;
-      const currentVersionStr = await this.redis.get(currentKeyKey);
-      
-      if (!currentVersionStr) {
-        return null;
-      }
-      
-      const currentVersion = JSON.parse(currentVersionStr) as KeyVersionInfo;
-      return currentVersion.keyId;
-    } catch (error) {
-      console.error(`[KEY_VERSIONING] Error getting current key version for ${keyType}:`, error);
-      throw error;
-    }
-  }
-
-  /**
    * Gets all historical key versions for a specific type
    */
-  async getHistoricalKeyVersions(keyType: string): Promise<string[]> {
+  async getHistoricalKeyVersionsLegacy(keyType: string): Promise<string[]> {
     try {
       const historicalKey = `historical_keys:${keyType}`;
       const versions = await this.redis.lrange(historicalKey, 0, -1);
@@ -109,26 +167,6 @@ export class KeyVersioning {
       });
     } catch (error) {
       console.error(`[KEY_VERSIONING] Error getting historical key versions for ${keyType}:`, error);
-      throw error;
-    }
-  }
-
-  /**
-   * Gets the last rotation date for a key type
-   */
-  async getLastRotationDate(keyType: string): Promise<Date | null> {
-    try {
-      const currentKeyKey = `current_key:${keyType}`;
-      const currentVersionStr = await this.redis.get(currentKeyKey);
-      
-      if (!currentVersionStr) {
-        return null;
-      }
-      
-      const currentVersion = JSON.parse(currentVersionStr) as KeyVersionInfo;
-      return new Date(currentVersion.createdAt);
-    } catch (error) {
-      console.error(`[KEY_VERSIONING] Error getting last rotation date for ${keyType}:`, error);
       throw error;
     }
   }

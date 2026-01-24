@@ -24,18 +24,30 @@ export class ConcurrentSessionManager {
 
   constructor(maxConcurrentSessions: number = 3) {
     this.maxConcurrentSessions = maxConcurrentSessions;
-    this.sessionSalt = process.env.SESSION_BINDING_SALT || this.generateSalt();
     
-    // Initialize Redis connection
+    // REQUIRED - fail hard if missing
+    if (!process.env.SESSION_BINDING_SALT) {
+      throw new Error(
+        'FATAL: SESSION_BINDING_SALT environment variable is required.\n' +
+        'Generate one using: openssl rand -hex 32\n' +
+        'Add to .env file: SESSION_BINDING_SALT=<generated_value>'
+      );
+    }
+    
+    this.sessionSalt = process.env.SESSION_BINDING_SALT;
+    
+    // Validate format
+    if (!/^[a-fA-F0-9]{64}$/.test(this.sessionSalt)) {
+      throw new Error(
+        'FATAL: SESSION_BINDING_SALT must be exactly 64 hexadecimal characters.\n' +
+        'Generate a new one using: openssl rand -hex 32'
+      );
+    }
+    
     this.redis = Redis.fromEnv();
   }
 
-  /**
-   * Generate a secure salt for hashing
-   */
-  private generateSalt(): string {
-    return randomBytes(32).toString('hex');
-  }
+
 
   /**
    * Create a new session for a user, enforcing concurrent session limits

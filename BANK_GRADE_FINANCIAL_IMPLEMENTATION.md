@@ -2,7 +2,7 @@
 
 ## EXECUTIVE SUMMARY
 
-This document outlines the implementation of a **Tier-1 Custodial Security System** that integrates with the existing post-quantum cryptographic security framework. The implementation includes all required custody controls with cryptographic security bindings as specified in the requirements.
+This document outlines the implementation of a **Tier-1 Custodial Security System** that integrates with the existing post-quantum cryptographic security framework (when OQS libraries are available). The implementation includes all required custody controls with cryptographic security bindings as specified in the requirements.
 
 ---
 
@@ -46,9 +46,9 @@ This document outlines the implementation of a **Tier-1 Custodial Security Syste
 - **Security bindings stored separately** for verification
 
 #### 6. PQ + Classical Signature Enforcement
-- **Both signatures verified independently** during custody operations
+- **Both signatures verified independently** during custody operations (when PQ is available)
 - **Failure of either = HARD FAIL** with immediate security logging
-- **Distinct PQ vs Classical failure reporting** in security alerts
+- **Distinct PQ vs Classical failure reporting** in security alerts (when PQ is available)
 
 #### 7. SIEM as Safety Gate
 - **Repeated SIEM failure trips circuit breaker** 
@@ -227,3 +227,15 @@ This implementation provides **robust custody security** when deployed with prop
 - Cryptographically verifiable operation history
 - Real-time security event correlation
 - Automated compliance reporting
+
+## What This System Does NOT Claim
+
+This system makes the following explicit non-guarantees:
+
+- **Universal PQ Availability**: Post-quantum cryptography is only available when OQS libraries are properly installed and configured in the deployment environment
+- **Quantum Immunity**: The system does not guarantee protection against quantum computers if PQ algorithms are compromised or if OQS libraries are unavailable
+- **Automatic Infrastructure Security**: Security controls do not extend to underlying infrastructure, network configurations, or hardware security
+- **Private Key Protection**: The system does not implement HSM or MPC solutions for private key storage (these must be implemented separately)
+- **Blockchain Integration**: The system does not provide blockchain settlement or external oracle integration
+- **Unconditional Attack Resistance**: Security posture depends on proper deployment, configuration, and operational procedures
+- **Compliance Certification**: The system facilitates compliance but does not automatically achieve SOC 2, ISO 27001, or other certifications

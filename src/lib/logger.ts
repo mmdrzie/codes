@@ -229,7 +229,8 @@ export enum LogLevel {
   INFO = 'info',
   WARN = 'warn',
   ERROR = 'error',
-  FATAL = 'fatal'
+  FATAL = 'fatal',
+  CRITICAL = 'critical'
 }
 
 interface LogEntry {
@@ -342,6 +343,9 @@ function writeLog(entry: LogEntry): void {
       case LogLevel.ERROR:
         securityLogger.error(sanitizedEntry.message, sanitizedEntry);
         break;
+      case LogLevel.CRITICAL:
+        securityLogger.error(sanitizedEntry.message, sanitizedEntry); // Map critical to error in winston
+        break;
       case LogLevel.FATAL:
         securityLogger.error(sanitizedEntry.message, sanitizedEntry);
         break;
@@ -360,6 +364,9 @@ function writeLog(entry: LogEntry): void {
         break;
       case LogLevel.ERROR:
         applicationLogger.error(sanitizedEntry.message, sanitizedEntry);
+        break;
+      case LogLevel.CRITICAL:
+        applicationLogger.error(sanitizedEntry.message, sanitizedEntry); // Map critical to error in winston
         break;
       case LogLevel.FATAL:
         applicationLogger.error(sanitizedEntry.message, sanitizedEntry);
@@ -441,6 +448,18 @@ class Logger {
       : error;
 
     this.log(LogLevel.ERROR, message, errorData);
+  }
+
+  critical(message: string, error?: Error | any): void {
+    const errorData = error instanceof Error
+      ? {
+          name: error.name,
+          message: error.message,
+          stack: error.stack
+        }
+      : error;
+
+    this.log(LogLevel.CRITICAL, message, errorData);
   }
 
   fatal(message: string, error?: Error | any): void {

@@ -12,9 +12,15 @@ import { validateWalletAddress } from '@/lib/security';
 import { validateAndParse } from '@/lib/validation';
 import { getAdminDb } from '@/lib/firebase';
 import * as admin from 'firebase-admin';
+import { SecureSessionManager, SessionInfo } from '@/lib/secure-session-manager';
+import { Redis as IORedis } from 'ioredis';
 
 // Initialize Redis
 const redis = Redis.fromEnv();
+const ioRedis = new IORedis(process.env.REDIS_URL || '');
+
+// Initialize secure session manager
+const secureSessionManager = new SecureSessionManager(ioRedis);
 
 // Constants
 const SESSION_ID_PREFIX = 'session:';
@@ -47,6 +53,7 @@ interface SessionData {
   ipAddress?: string;
   userAgent?: string;
   isActive: boolean;
+  deviceFingerprint?: string;
 }
 
 // Hardened Authentication Service
@@ -459,21 +466,28 @@ export class HardenedAuthService {
    */
   private static async createSession(userId: string, tenantId: string | undefined, sessionData: { authMethod: 'wallet' | 'firebase' | 'password'; ipAddress?: string; userAgent?: string }): Promise<string> {
     const sessionId = `sess_${crypto.randomUUID()}`;
-    const session: SessionData = {
-      userId,
+    
+    // Create session info for secure session manager
+    const sessionInfo: SessionInfo = {
       sessionId,
-      tenantId,
-      authMethod: sessionData.authMethod,
-      createdAt: new Date(),
-      expiresAt: new Date(Date.now() + SESSION_TTL * 1000),
-      ipAddress: sessionData.ipAddress,
-      userAgent: sessionData.userAgent,
-      isActive: true
+      userId,
+      ip: sessionData.ipAddress || 'unknown',
+      userAgent: sessionData.userAgent || 'unknown',
+      createdAt: Date.now(),
+      lastActive: Date.now(),
+      expiresAt: Date.now() + (SESSION_TTL * 1000), // Convert to milliseconds
+      tenantId: tenantId || 'default',
+      deviceFingerprint: sessionData.userAgent ? crypto.createHash('md5').update(sessionData.userAgent).digest('hex') : 'unknown',
+      boundToUserId: userId,
+      boundToDevice: sessionData.userAgent ? crypto.createHash('md5').update(sessionData.userAgent).digest('hex') : 'unknown'
     };
 
-    // Store session in Redis
-    const key = `${SESSION_ID_PREFIX}${sessionId}`;
-    await redis.setex(key, SESSION_TTL, JSON.stringify(session));
+    // Use secure session manager to track the session
+    const success = await secureSessionManager.trackSession(sessionInfo);
+    
+    if (!success) {
+      throw new Error('Failed to create secure session');
+    }
 
     return sessionId;
   }

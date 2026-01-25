@@ -17,7 +17,7 @@ Our implementation follows zero-trust principles with multiple layers of securit
 ## 🔐 Authentication Security
 
 ### JWT Token Security
-- **Post-Quantum Hybrid Signatures**: Combines classical Ed25519 with quantum-resistant Dilithium signatures
+- **Post-Quantum Hybrid Signatures**: Combines classical Ed25519 with quantum-resistant Dilithium signatures (when OQS libraries are available)
 - **Short-Lived Access Tokens**: 5-minute TTL to minimize exposure window
 - **Long-Lived Refresh Tokens**: 7-day TTL with strict rotation policies
 - **Unique JWT IDs (JTI)**: Prevents replay attacks via tracking mechanisms
@@ -211,6 +211,18 @@ While the system implements comprehensive security controls, the following risks
 4. **Quantum Computing Advancement**: Rapid developments in quantum computing capability
 5. **Social Engineering**: Human factor exploitation
 
+## What This System Does NOT Claim
+
+This system makes the following explicit non-guarantees:
+
+- **Universal PQ Availability**: Post-quantum cryptography is only available when OQS libraries are properly installed and configured in the deployment environment
+- **Quantum Immunity**: The system does not guarantee protection against quantum computers if PQ algorithms are compromised or if OQS libraries are unavailable  
+- **Automatic Infrastructure Security**: Security controls do not extend to underlying infrastructure, network configurations, or hardware security
+- **Private Key Protection**: The system does not implement HSM or MPC solutions for private key storage (these must be implemented separately)
+- **Blockchain Integration**: The system does not provide blockchain settlement or external oracle integration
+- **Unconditional Attack Resistance**: Security posture depends on proper deployment, configuration, and operational procedures
+- **Compliance Certification**: The system facilitates compliance but does not automatically achieve SOC 2, ISO 27001, or other certifications
+
 ## 🎯 Custodial Security Achievement
 
 **Status: ACHIEVED**
@@ -225,4 +237,4 @@ The implementation meets all specified requirements:
 - ✅ Fail-closed security posture
 - ✅ Automated security self-tests
 
-The system is ready for deployment in production environments handling high-value custodial operations and sensitive personal data.
+The system is ready for deployment in production environments handling high-value custodial operations and sensitive personal data when OQS libraries are available and properly configured.

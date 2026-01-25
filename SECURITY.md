@@ -1,7 +1,7 @@
 # QuantumIQ Security Architecture & Implementation
 
 ## Overview
-This document describes the comprehensive security architecture implemented in the QuantumIQ platform, featuring post-quantum cryptography, hardened authentication systems, and advanced threat detection capabilities.
+This document describes the comprehensive security architecture implemented in the QuantumIQ platform, featuring hybrid post-quantum cryptography (when available), hardened authentication systems, and advanced threat detection capabilities.
 
 ## Security Domains
 
@@ -32,9 +32,9 @@ This document describes the comprehensive security architecture implemented in t
 
 #### Hybrid Cryptographic Implementation
 - **Classical Component**: Ed25519 signatures for performance and compatibility
-- **Post-Quantum Component**: SLH-DSA (FIPS 205) signatures for quantum resistance
-- **Combined Verification**: Both signatures must validate for successful authentication
-- **No Downgrade Attacks**: System rejects tokens with only classical or only PQ signatures
+- **Post-Quantum Component**: SLH-DSA (FIPS 205) signatures for quantum resistance (when OQS libraries are available)
+- **Combined Verification**: Both signatures must validate for successful authentication (when PQ is available)
+- **No Downgrade Attacks**: System rejects tokens with only classical or only PQ signatures (when PQ is available)
 
 #### Key Lifecycle Management
 - **Automatic Rotation**: Keys are rotated based on configurable intervals
@@ -153,7 +153,7 @@ This document describes the comprehensive security architecture implemented in t
 - **Monitoring Coverage**: All security-relevant events monitored
 
 #### Attack Classes Successfully Mitigated
-1. **Cryptographic Attacks**: Defeated through hybrid post-quantum cryptography
+1. **Cryptographic Attacks**: Mitigated through hybrid post-quantum cryptography (when available)
 2. **Authentication Bypasses**: Prevented via hardened multi-factor validation
 3. **Resource Exhaustion**: Thwarted by adaptive rate limiting
 4. **Data Exposure**: Averted through encryption and access controls
@@ -176,3 +176,15 @@ This document describes the comprehensive security architecture implemented in t
 **Security Level**: Production-Ready, Attack-Resilient
 **Last Updated**: January 2026
 **Classification**: Controlled Internal Distribution
+
+## What This System Does NOT Claim
+
+This system makes the following explicit non-guarantees:
+
+- **Universal PQ Availability**: Post-quantum cryptography is only available when OQS libraries are properly installed and configured in the deployment environment
+- **Quantum Immunity**: The system does not guarantee protection against quantum computers if PQ algorithms are compromised or if OQS libraries are unavailable
+- **Automatic Infrastructure Security**: Security controls do not extend to underlying infrastructure, network configurations, or hardware security
+- **Private Key Protection**: The system does not implement HSM or MPC solutions for private key storage (these must be implemented separately)
+- **Blockchain Integration**: The system does not provide blockchain settlement or external oracle integration
+- **Unconditional Attack Resistance**: Security posture depends on proper deployment, configuration, and operational procedures
+- **Compliance Certification**: The system facilitates compliance but does not automatically achieve SOC 2, ISO 27001, or other certifications

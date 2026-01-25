@@ -43,7 +43,7 @@ This document provides a comprehensive overview of the security updates and conf
 - **AES-256-GCM**: For symmetric encryption
 - **RSA-4096**: For asymmetric encryption and signatures
 - **Ed25519**: For fast digital signatures
-- **SLH-DSA**: Post-Quantum cryptographic algorithm
+- **SLH-DSA**: Post-Quantum cryptographic algorithm (when OQS libraries are available)
 
 ### Key Management Features
 - **Secure Key Generation**: Uses CSPRNG for all key generation
@@ -74,8 +74,8 @@ This document provides a comprehensive overview of the security updates and conf
 ## 5. Post-Quantum Cryptography Validation
 
 ### PQC Implementation
-- **Open Quantum Safe (OQS) Integration**: Ready for PQC algorithms
-- **Algorithm Support**: Crystals-Kyber and Crystals-Dilithium
+- **Open Quantum Safe (OQS) Integration**: Ready for PQC algorithms when OQS libraries are installed
+- **Algorithm Support**: Crystals-Kyber and Crystals-Dilithium (when available)
 - **Fallback Mechanisms**: Graceful degradation if PQC unavailable
 - **Validation Framework**: Continuous validation of PQC availability
 
@@ -147,4 +147,16 @@ All security features are production-ready with:
 - [ ] Cross-site scripting protection
 - [ ] Clickjacking prevention
 
-This implementation ensures the QuantumIQ project meets enterprise-grade security standards for handling sensitive financial data and real user wallets.
+This implementation ensures the QuantumIQ project meets enterprise-grade security standards for handling sensitive financial data and real user wallets when properly deployed with OQS libraries and appropriate infrastructure.
+
+## What This System Does NOT Claim
+
+This system makes the following explicit non-guarantees:
+
+- **Universal PQ Availability**: Post-quantum cryptography is only available when OQS libraries are properly installed and configured in the deployment environment
+- **Quantum Immunity**: The system does not guarantee protection against quantum computers if PQ algorithms are compromised or if OQS libraries are unavailable
+- **Automatic Infrastructure Security**: Security controls do not extend to underlying infrastructure, network configurations, or hardware security
+- **Private Key Protection**: The system does not implement HSM or MPC solutions for private key storage (these must be implemented separately)
+- **Blockchain Integration**: The system does not provide blockchain settlement or external oracle integration
+- **Unconditional Attack Resistance**: Security posture depends on proper deployment, configuration, and operational procedures
+- **Compliance Certification**: The system facilitates compliance but does not automatically achieve SOC 2, ISO 27001, or other certifications

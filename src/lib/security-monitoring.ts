@@ -4,6 +4,7 @@ import {
   siemService, 
   SeverityLevel 
 } from './siem-integration';
+import { logger } from './logger';
 
 // Log rate limiting - prevent log flooding
 const LOG_RATE_LIMIT_WINDOW_MS = 60000; // 1 minute window

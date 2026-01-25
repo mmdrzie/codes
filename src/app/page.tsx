@@ -1,34 +1,79 @@
-'use client';
+import Link from 'next/link';
+import { redirect } from 'next/navigation';
+import { cookies } from 'next/headers';
+import { verifySessionCookie, SessionUser } from '@/lib/sessionUtils';
+import Hero from '@/components/landing/Hero';
+import WhatItDoes from '@/components/landing/WhatItDoes';
+import CoreCapabilities from '@/components/landing/CoreCapabilities';
+import MultiModelArchitecture from '@/components/landing/MultiModelArchitecture';
+import RiskSafety from '@/components/landing/RiskSafety';
+import FutureCapabilities from '@/components/landing/FutureCapabilities';
+import TrustTransparency from '@/components/landing/TrustTransparency';
+import Footer from '@/components/landing/Footer';
 
-import { useAuth } from '@/features/auth/hooks/useAuth';
-import { useRouter } from 'next/navigation';
-
-export default function HomePage() {
-  const { user, loading } = useAuth();
-  const router = useRouter();
-
-  if (loading) return <p>Loading...</p>;
-
-  const handleGetStarted = () => {
-    if (user) {
-      router.push('/dashboard');
-    } else {
-      router.push('/login');
+// Server-side function to check authentication
+async function checkAuthStatus() {
+  try {
+    // Get session cookie from request headers
+    const cookieStore = cookies();
+    const sessionCookie = cookieStore.get('__session')?.value || cookieStore.get('access_token')?.value;
+    
+    if (!sessionCookie) {
+      return { authenticated: false, user: null };
     }
+    
+    // Verify the session cookie using the existing authentication system
+    const user = await verifySessionCookie(sessionCookie);
+    
+    if (user) {
+      return { authenticated: true, user };
+    } else {
+      return { authenticated: false, user: null };
+    }
+  } catch (error) {
+    console.error('Auth check error:', error);
+    return { authenticated: false, user: null };
+  }
+}
+
+export async function generateMetadata() {
+  return {
+    title: 'QuantumIQ - AI-Driven Trading Intelligence Platform',
+    description: 'Advanced multi-model AI architecture providing context-aware market analysis and risk evaluation for informed trading decisions.',
+    keywords: 'AI trading, trading intelligence, risk management, decision support, algorithmic trading',
+    openGraph: {
+      title: 'QuantumIQ - AI-Driven Trading Intelligence',
+      description: 'Advanced AI decision support for sophisticated traders',
+      type: 'website',
+    },
   };
+}
+
+export default async function LandingPage() {
+  const { authenticated, user } = await checkAuthStatus();
+  
+  // Redirect authenticated users to dashboard
+  if (authenticated && user) {
+    redirect('/dashboard');
+  }
 
   return (
-    <main className="flex min-h-screen flex-col items-center justify-center bg-gray-100">
-      <div className="text-center max-w-2xl px-4">
-        <h1 className="text-5xl font-bold mb-6">Welcome to QuantumIQ</h1>
-        <p className="text-xl mb-10 text-gray-600">Your AI-powered SaaS for [توضیح کوتاه سایت — مثلاً analysis, chat, charts و ...]</p>
-        <button
-          onClick={handleGetStarted}
-          className="px-8 py-4 bg-blue-600 text-white text-lg rounded-lg hover:bg-blue-700 transition"
-        >
-          Get Started
-        </button>
-      </div>
+    <LandingPageContent />
+  );
+}
+
+function LandingPageContent() {
+  return (
+    <main className="min-h-screen bg-black text-white">
+      <Hero />
+      <WhatItDoes />
+      <CoreCapabilities />
+      <MultiModelArchitecture />
+      <RiskSafety />
+      <FutureCapabilities />
+      <TrustTransparency />
+      <Footer />
     </main>
   );
 }
+

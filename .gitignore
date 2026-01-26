@@ -1,3 +1,9 @@
+
+```
+# Security-related
+SECURITY_GUARANTEES.md
+```
+=======
 # Examples 1:
 
     Input:
@@ -50,4 +56,4 @@ Expected Output:
     .idea/
     #Original rules preserved
     *.log
-Final reminder: Output ONLY the .gitignore content. If nothing should be ignored, output NOTHING.
+

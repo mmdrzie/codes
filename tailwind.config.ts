@@ -11,9 +11,11 @@ module.exports = {
         primary: '#6366f1',
         secondary: '#10b981',
         dark: '#0f172a',
+        background: '#000000',
+        foreground: '#ffffff',
       },
     },
   },
   plugins: [], // حذف require('@tailwindcss/forms')
-  darkMode: 'media',
+  darkMode: 'class', // Changed from 'media' to 'class' to force dark mode
 }

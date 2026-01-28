@@ -1,10 +1,21 @@
 ```
 # Dependencies
 node_modules/
+.pnpm-store/
 
 # Build artifacts
 dist/
 build/
+
+.next/
+out/
+
+# TypeScript/JavaScript
+*.tsbuildinfo
+*.js.map
+*.jsx.map
+*.ts.map
+=======
 target/
 
 # Python
@@ -21,6 +32,7 @@ venv/
 .mypy_cache/
 .pytest_cache/
 
+
 # Logs
 *.log
 
@@ -29,11 +41,27 @@ venv/
 .env.local
 .env.*
 
+!.env.example
+
+# IDE files
+=======
+
 # IDE specific
+
 .vscode/
 .idea/
 *.swp
 *.swo
+
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Coverage
+coverage/
+.nyc_output/
+=======
 *.tmp
 
 # OS generated
@@ -68,4 +96,5 @@ htmlcov/
 *.tar.bz2
 *.tar.xz
 *.tar.zst
+
 ```

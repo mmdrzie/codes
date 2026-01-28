@@ -274,3 +274,69 @@ export type ChangePasswordInput = z.infer<typeof changePasswordSchema>;
 export type TenantInput = z.infer<typeof tenantSchema>;
 export type ApiRequestInput = z.infer<typeof apiRequestSchema>;
 export type SiweMessageInput = z.infer<typeof siweMessageSchema>;
+
+// Additional import for model output validation
+import { ModelOutput, AnalysisType, ConfidenceLevel } from '@/types/analysis';
+
+/**
+ * Simple sanitization function to remove potentially dangerous HTML
+ */
+function simpleSanitize(content: string): string {
+  if (typeof content !== 'string') return '';
+  
+  // Remove potentially dangerous patterns
+  return content
+    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+    .replace(/javascript:/gi, '')
+    .replace(/on\w+\s*=/gi, '')
+    .replace(/data:/gi, '')
+    .replace(/<iframe\b[^<]*(?:(?!<\/iframe>)<[^<]*)*<\/iframe>/gi, '')
+    .replace(/<object\b[^<]*(?:(?!<\/object>)<[^<]*)*<\/object>/gi, '')
+    .replace(/<embed\b[^<]*(?:(?!<\/embed>)<[^<]*)*<\/embed>/gi, '')
+    .trim();
+}
+
+/**
+ * Sanitizes and validates model output to prevent injection attacks
+ */
+export function validateAndSanitizeModelOutput(output: any): Omit<ModelOutput, 'id' | 'hash' | 'immutable'> {
+  // Validate required fields exist
+  if (!output.modelId || !output.modelName || !output.modelVersion || !output.content) {
+    throw new Error('Missing required fields in model output');
+  }
+
+  // Sanitize content to prevent XSS
+  const sanitizedContent = simpleSanitize(output.content);
+  
+  // Validate timestamp
+  const timestamp = output.timestamp instanceof Date ? output.timestamp : 
+                   typeof output.timestamp === 'string' ? new Date(output.timestamp) : 
+                   new Date();
+
+  // Validate enums
+  const validAnalysisTypes = Object.values(AnalysisType);
+  const analysisType = validAnalysisTypes.includes(output.analysisType) ? 
+                      output.analysisType : 
+                      AnalysisType.MARKET_STATE;
+
+  const validConfidenceLevels = Object.values(ConfidenceLevel);
+  const confidence = validConfidenceLevels.includes(output.confidence) ? 
+                    output.confidence : 
+                    ConfidenceLevel.MEDIUM;
+
+  // Construct validated output
+  return {
+    modelId: String(output.modelId).substring(0, 100), // Limit length
+    modelName: String(output.modelName).substring(0, 100),
+    modelVersion: String(output.modelVersion).substring(0, 20),
+    timestamp,
+    analysisType,
+    content: sanitizedContent,
+    confidence,
+    referenceContext: output.referenceContext || {},
+    metadata: {
+      version: output.metadata?.version || '1.0',
+      source: output.metadata?.source || 'unknown'
+    }
+  };
+}

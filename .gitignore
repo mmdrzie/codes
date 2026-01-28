@@ -1,22 +1,17 @@
 ```
 # Dependencies
 node_modules/
-.pnpm-store/
 
-# Build artifacts
+# Build outputs
 dist/
 build/
-
 .next/
 out/
 
-# TypeScript/JavaScript
-*.tsbuildinfo
-*.js.map
-*.jsx.map
-*.ts.map
-=======
-target/
+# Environment variables
+.env
+.env.local
+*.env.*
 
 # Python
 __pycache__/
@@ -27,74 +22,33 @@ __pycache__/
 env/
 venv/
 .venv/
-.ENV
-.ENV.*
-.mypy_cache/
-.pytest_cache/
+pip-log.txt
+pip-delete-this-directory.txt
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.log
+*.tmp
 
+# TypeScript/JavaScript
+*.tsbuildinfo
+*.js.map
+*.jsx.map
+*.ts.map
 
 # Logs
 *.log
 
-# Environment variables
-.env
-.env.local
-.env.*
-
-!.env.example
-
-# IDE files
-=======
-
-# IDE specific
-
-.vscode/
-.idea/
-*.swp
-*.swo
-
-
-# OS files
+# OS generated files
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
 Thumbs.db
-
-# Coverage
-coverage/
-.nyc_output/
-=======
-*.tmp
-
-# OS generated
-.DS_Store
-Thumbs.db
-
-# Coverage reports
-coverage/
-htmlcov/
-.coverage
-
-# Compressed files
-*.zip
-*.gz
-*.tar
-*.tgz
-*.bz2
-*.xz
-*.7z
-*.rar
-*.zst
-*.lz4
-*.lzh
-*.cab
-*.arj
-*.rpm
-*.deb
-*.Z
-*.lz
-*.lzo
-*.tar.gz
-*.tar.bz2
-*.tar.xz
-*.tar.zst
-
 ```

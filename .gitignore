@@ -13,54 +13,36 @@ out/
 .env.local
 *.env.*
 
-# IDE files
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# Logs
-*.log
-
-# Python cache
+# Python
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
+.Python
+env/
+venv/
+.venv/
+.ENV
 
-# Temporary files
-*.tmp
-*.temp
+# Logs
+*.log
 
 # OS generated files
 .DS_Store
 Thumbs.db
 
-# Coverage reports
-coverage/
-htmlcov/
-.coverage
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
 
 # Testing
-.pytest_cache/
-.mypy_cache/
+.coverage
+coverage/
+htmlcov/
 
-# Distribution / packaging
-*.tar.gz
-*.whl
-*.egg-info/
-
-# Runtime data
-pids
-*.pid
-*.seed
-*.pid.lock
-
-# Debug
-*.log
-*.debug.log
-
-# Local configuration
-.env*
-!.env.example
+# Temporary files
+*.tmp
+*.temp
 ```

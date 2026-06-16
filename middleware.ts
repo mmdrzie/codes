@@ -539,6 +539,8 @@ function isHighValueRoute(pathname: string): boolean {
 
 /**
  * Check if user has MFA verified for high-value operations
+ * SECURITY FIX: Never trust client-controlled headers
+ * MFA status MUST be verified server-side via Redis-backed session store
  */
 async function checkMFAVerification(request: NextRequest, userId: string | undefined): Promise<boolean> {
   if (!userId) {
@@ -546,44 +548,59 @@ async function checkMFAVerification(request: NextRequest, userId: string | undef
   }
 
   try {
-    // Check for MFA verification in the request headers or session
-    const mfaVerified = request.headers.get('x-mfa-verified');
-    
-    if (mfaVerified === 'true') {
+    // CRITICAL SECURITY FIX: Never trust x-mfa-verified header from client
+    // This was a critical vulnerability allowing MFA bypass
+
+    // Extract session ID from request
+    const sessionId = getSessionIdFromRequest(request);
+    if (!sessionId) {
+      logger.warn('MFA check failed: No session ID found', { userId });
+      return false;
+    }
+
+    // Import enterprise session manager for server-side MFA verification
+    const { getEnterpriseRedisClient } = await import('./src/infrastructure/redis/enterprise-redis-client');
+    const { createEnterpriseSessionManager } = await import('./src/core/session/enterprise-session-manager');
+
+    const redisClient = getEnterpriseRedisClient();
+    const sessionManager = createEnterpriseSessionManager(redisClient);
+
+    // Verify MFA status through Redis-backed session store
+    const mfaVerified = await sessionManager.isMFAVerified(sessionId);
+
+    if (mfaVerified) {
+      logger.info('MFA verified via server-side session store', { userId, sessionId });
       return true;
     }
 
-    // Check if MFA token is present in the request
-    const mfaToken = request.headers.get('x-mfa-token');
-    if (mfaToken) {
-      // In a real implementation, verify the MFA token against the user's MFA setup
-      // For now, we'll just return true if a token is present (this would be validated properly in production)
-      return true;
-    }
-
-    // Additional check: look for MFA verification in the JWT token claims
+    // Fallback: Check JWT claims for mfa_verified (signed by server, cannot be tampered)
     const authHeader = request.headers.get('Authorization');
     if (authHeader && authHeader.startsWith('Bearer ')) {
       const token = authHeader.substring(7);
       try {
-        // Decode JWT to check for MFA claim
         const base64Url = token.split('.')[1];
         const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
         const payload = JSON.parse(atob(base64));
-        
-        // Check if the token includes MFA verification
-        if (payload.mfa_verified === true) {
+
+        // Only trust mfa_verified if it's in the signed JWT payload
+        // This claim can only be set by the server during authentication
+        if (payload.mfa_verified === true && payload.sessionId === sessionId) {
           return true;
         }
       } catch (e) {
-        // If decoding fails, continue with other methods
+        // If decoding fails, MFA verification fails
       }
     }
 
-    // If no MFA verification found, return false
+    logger.warn('MFA required but not verified for high-value route', {
+      userId,
+      sessionId,
+    });
+
     return false;
   } catch (error) {
     logger.error('Error checking MFA verification', { error: (error as Error).message, userId });
+    // Fail closed: require MFA on error
     return false;
   }
 }

@@ -2,6 +2,12 @@ import { AuthUser, FirebaseUser, Web3User, SiweVerifyParams } from '@/types/auth
 import { FirebaseAuthService } from './firebase-auth';
 import { SiweService } from './web3/siwe-service';
 import { z } from 'zod';
+import { getEnterpriseRedisClient } from '@/infrastructure/redis/enterprise-redis-client';
+import { EnterpriseSessionManager } from '@/core/session/enterprise-session-manager';
+
+// Enterprise session manager instance
+const redisClient = getEnterpriseRedisClient();
+const sessionManager = new EnterpriseSessionManager(redisClient);
 
 export class AuthService {
   /**
@@ -9,22 +15,15 @@ export class AuthService {
    */
   static async signInWithEmailAndPassword(email: string, password: string): Promise<{ user: AuthUser; token: string }> {
     try {
-      // Validate input
       const validated = z.object({
         email: z.string().email('Invalid email address'),
         password: z.string().min(8, 'Password must be at least 8 characters'),
       }).parse({ email, password });
 
-      // Authenticate with Firebase
       const firebaseUser = await FirebaseAuthService.signInWithEmailAndPassword(validated.email, validated.password);
-      
-      // Create session token
       const token = await FirebaseAuthService.createSessionToken(firebaseUser);
-      
-      // Set session cookie
       FirebaseAuthService.setSessionCookie(token);
-      
-      // Create AuthUser object
+
       const authUser: AuthUser = {
         id: firebaseUser.uid,
         type: 'firebase',
@@ -45,23 +44,16 @@ export class AuthService {
    */
   static async signUpWithEmailAndPassword(email: string, password: string, displayName?: string): Promise<{ user: AuthUser; token: string }> {
     try {
-      // Validate input
       const validated = z.object({
         email: z.string().email('Invalid email address'),
         password: z.string().min(8, 'Password must be at least 8 characters'),
         displayName: z.string().optional(),
       }).parse({ email, password, displayName });
 
-      // Create user with Firebase
       const firebaseUser = await FirebaseAuthService.createUser(validated.email, validated.password, validated.displayName);
-      
-      // Create session token
       const token = await FirebaseAuthService.createSessionToken(firebaseUser);
-      
-      // Set session cookie
       FirebaseAuthService.setSessionCookie(token);
-      
-      // Create AuthUser object
+
       const authUser: AuthUser = {
         id: firebaseUser.uid,
         type: 'firebase',
@@ -78,11 +70,11 @@ export class AuthService {
   }
 
   /**
-   * Sign in with Web3 (SIWE)
+   * Sign in with Web3 (SIWE) - Uses enterprise nonce store
    */
   static async signInWithWeb3(params: SiweVerifyParams, domain: string): Promise<{ user: AuthUser; token: string }> {
     try {
-      // Extract nonce from the message to verify
+      // Extract nonce from the message
       const messageLines = params.message.split('\n');
       let nonce = '';
       for (const line of messageLines) {
@@ -96,16 +88,15 @@ export class AuthService {
         throw new Error('Nonce not found in message');
       }
 
-      // Verify SIWE signature
+      // Verify SIWE signature (uses enterprise nonce store internally)
       const web3User = await SiweService.verifySiweSignature(params, domain, nonce);
-      
+
       // Create session token
-      const token = await SiweService.createSessionToken(web3User);
-      
+      const token = await SiweService.createSecureSessionToken(web3User);
+
       // Set session cookie
-      SiweService.setSessionCookie(token);
-      
-      // Create AuthUser object
+      SiweService.setSecureSessionCookie(token);
+
       const authUser: AuthUser = {
         id: web3User.address,
         type: 'web3',
@@ -126,14 +117,12 @@ export class AuthService {
    */
   static async getCurrentUser(): Promise<AuthUser | null> {
     try {
-      // Try to get session from cookies
       const token = SiweService.getSessionCookie();
       if (!token) {
         return null;
       }
 
-      // Verify the session token
-      const user = await SiweService.verifySessionToken(token);
+      const user = await SiweService.verifySecureSessionToken(token);
       return user;
     } catch (error) {
       console.error('Error getting current user:', error);
@@ -142,28 +131,14 @@ export class AuthService {
   }
 
   /**
-   * Generate SIWE message for Web3 authentication
+   * Generate SIWE nonce using enterprise store
    */
-  static generateSiweMessage(address: string, domain: string, chainId: number): { message: string; nonce: string } {
-    try {
-      // Validate address
-      if (!SiweService.validateEthereumAddress(address)) {
-        throw new Error('Invalid Ethereum address');
-      }
-
-      // Generate nonce
-      const nonce = SiweService.generateNonce();
-
-      // Create SIWE message
-      const siweMessage = SiweService.createSiweMessage(address, domain, nonce, chainId);
-
-      // Format as EIP-4361 compliant message string
-      const message = `${siweMessage.domain} wants you to sign in with your Ethereum account:\n${siweMessage.address}\n\n${siweMessage.statement || ''}\n\nURI: ${siweMessage.uri}\nVersion: ${siweMessage.version}\nChain ID: ${siweMessage.chainId}\nNonce: ${siweMessage.nonce}\nIssued At: ${siweMessage.issuedAt}${siweMessage.expirationTime ? `\nExpiration Time: ${siweMessage.expirationTime}` : ''}${siweMessage.notBefore ? `\nNot Before: ${siweMessage.notBefore}` : ''}${siweMessage.requestId ? `\nRequest ID: ${siweMessage.requestId}` : ''}${siweMessage.resources && siweMessage.resources.length > 0 ? `\nResources:\n${siweMessage.resources.join('\n')}` : ''}`;
-
-      return { message, nonce };
-    } catch (error: any) {
-      throw new Error(`SIWE message generation failed: ${error.message}`);
+  static async generateSiweNonce(address: string): Promise<{ nonce: string; message: string; expiresAt: number }> {
+    if (!SiweService.validateEthereumAddress(address)) {
+      throw new Error('Invalid Ethereum address');
     }
+
+    return await SiweService.generateSecureNonce(address);
   }
 
   /**
@@ -173,15 +148,13 @@ export class AuthService {
     try {
       const user = await this.getCurrentUser();
       if (!user) {
-        return; // No user to log out
+        return;
       }
 
       if (user.type === 'firebase' && user.firebaseUser) {
-        // Revoke Firebase tokens
         await FirebaseAuthService.revokeTokens(user.firebaseUser.uid);
       }
 
-      // Clear session cookies
       const { cookies } = await import('next/headers');
       cookies().delete('auth_session');
       cookies().delete('web3_auth_session');
@@ -222,7 +195,7 @@ export class AuthService {
    */
   static async verifyToken(token: string): Promise<AuthUser> {
     try {
-      return await SiweService.verifySessionToken(token);
+      return await SiweService.verifySecureSessionToken(token);
     } catch (error: any) {
       throw new Error(`Token verification failed: ${error.message}`);
     }

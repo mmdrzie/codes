@@ -2,47 +2,55 @@ import { NextRequest, NextResponse } from 'next/server';
 import { loginSchema } from '@/lib/validation';
 import { verifyPassword } from '@/lib/security';
 import { generateTokenPair } from '@/lib/tokenUtils';
-import { createSession } from '@/lib/sessionUtils';
 import { setAuthCookies } from '@/lib/cookies';
-import { checkRateLimit, getIdentifier } from '@/lib/rateLimit';
-import { logger, logAuthEvent, logSecurityEvent } from '@/lib/logger';
+import { getEnterpriseRedisClient } from '@/infrastructure/redis/enterprise-redis-client';
+import { EnterpriseRateLimiter } from '@/core/ratelimit/enterprise-rate-limiter';
+import { EnterpriseSessionManager } from '@/core/session/enterprise-session-manager';
+import { logger } from '@/lib/logger';
 import { getClientIp, getUserAgent } from '@/lib/helpers';
 import { getAdminDb } from '@/lib/firebase';
+
+// Initialize enterprise components
+const redisClient = getEnterpriseRedisClient();
+const rateLimiter = new EnterpriseRateLimiter(redisClient);
+const sessionManager = new EnterpriseSessionManager(redisClient);
 
 export async function POST(request: NextRequest) {
   const startTime = Date.now();
   let userEmail: string | undefined;
 
   try {
-    // بررسی Rate Limit
-    const identifier = getIdentifier(request);
-    const db = getAdminDb();
-    const rateLimitResult = checkRateLimit(identifier, 'login');
+    // CRITICAL: Apply rate limiting FIRST - FAILS CLOSED
+    const identifier = getClientIp(request) || 'unknown';
+    const rateLimitResult = await rateLimiter.checkRateLimit(
+      `login:${identifier}`,
+      'auth:login'
+    );
 
     if (!rateLimitResult.allowed) {
-      logSecurityEvent('rate_limit_exceeded', 'medium', {
+      logger.warn('Login rate limit exceeded', {
         identifier,
-        endpoint: '/api/auth/login',
-        remainingTime: new Date(rateLimitResult.resetAt).toISOString()
+        resetAt: new Date(rateLimitResult.resetAt).toISOString()
       });
 
       return NextResponse.json(
         {
-          error: rateLimitResult.message,
+          error: 'Too many login attempts. Please try again later.',
           resetAt: rateLimitResult.resetAt
         },
         {
           status: 429,
           headers: {
-            'X-RateLimit-Limit': '5',
+            'X-RateLimit-Limit': rateLimitResult.policy?.maxRequests.toString() || '5',
             'X-RateLimit-Remaining': rateLimitResult.remaining.toString(),
-            'X-RateLimit-Reset': rateLimitResult.resetAt.toString()
+            'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
+            'Retry-After': Math.ceil((rateLimitResult.resetAt - Date.now()) / 1000).toString()
           }
         }
       );
     }
 
-    // دریافت و Validation داده
+    // Parse and validate request body
     const body = await request.json();
     const validation = loginSchema.safeParse(body);
 
@@ -62,16 +70,16 @@ export async function POST(request: NextRequest) {
     const { email, password } = validation.data;
     userEmail = email;
 
-    // جستجوی کاربر در Database
+    // Look up user in database
+    const db = getAdminDb();
     const user = await db.collection('users').where('email', '==', email).get();
 
     if (user.empty) {
-      // تاخیر برای جلوگیری از Timing Attack
+      // Delay to prevent timing attack
       await new Promise(resolve => setTimeout(resolve, 1000));
 
-      logSecurityEvent('login_failed', 'low', {
+      logger.warn('Login failed - user not found', {
         email,
-        reason: 'user_not_found',
         ip: getClientIp(request)
       });
 
@@ -83,17 +91,15 @@ export async function POST(request: NextRequest) {
 
     const firstDoc = user.docs[0];
     if (!firstDoc) {
-      // This should be unreachable because we checked user.empty above,
-      // but keeps TypeScript happy and protects against edge cases.
       return NextResponse.json({ error: 'Invalid email or password' }, { status: 401 });
     }
 
     const userData = firstDoc.data();
     const userId = firstDoc.id;
 
-    // بررسی وضعیت حساب
+    // Check account status
     if (userData.status === 'blocked') {
-      logSecurityEvent('login_attempt_blocked_user', 'high', {
+      logger.warn('Login attempt on blocked account', {
         userId,
         email,
         ip: getClientIp(request)
@@ -105,22 +111,22 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // تایید Password
+    // Verify password
     const isPasswordValid = await verifyPassword(password, userData.passwordHash);
 
     if (!isPasswordValid) {
-      // ثبت تلاش ناموفق
+      // Increment failed login attempts
       await db.collection('users').doc(userId).update({
         failedLoginAttempts: (userData.failedLoginAttempts || 0) + 1,
         lastFailedLogin: new Date()
       });
 
-      logAuthEvent('login', userId, false, {
+      logger.warn('Login failed - invalid password', {
         email,
-        reason: 'invalid_password'
+        userId
       });
 
-      // تاخیر برای جلوگیری از Timing Attack
+      // Delay to prevent timing attack
       await new Promise(resolve => setTimeout(resolve, 1000));
 
       return NextResponse.json(
@@ -129,7 +135,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // ریست کردن تلاش‌های ناموفق
+    // Reset failed login attempts
     if (userData.failedLoginAttempts > 0) {
       await db.collection('users').doc(userId).update({
         failedLoginAttempts: 0,
@@ -137,26 +143,32 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    // تولید Token ها
+    // Generate tokens
     const tokens = generateTokenPair({
       userId,
       tenantId: userData.tenantId,
       email: userData.email
     });
 
-    // ایجاد Session
-    const sessionId = createSession(userId, userData.tenantId, {
-      ipAddress: getClientIp(request),
-      userAgent: getUserAgent(request)
-    });
+    // Create session using enterprise session manager
+    const sessionId = await sessionManager.createSession({
+      userId,
+      tenantId: userData.tenantId || 'default',
+      deviceFingerprint: getUserAgent(request) || 'unknown',
+      ipAddress: getClientIp(request) || 'unknown',
+      userAgent: getUserAgent(request) || 'unknown',
+      authMethod: 'password',
+      roles: ['user'],
+      permissions: []
+    }).then(s => s.sessionId);
 
-    // بروزرسانی اطلاعات کاربر
+    // Update user info
     await db.collection('users').doc(userId).update({
       lastLogin: new Date(),
       lastLoginIp: getClientIp(request)
     });
 
-    // ایجاد Response
+    // Create response
     const response = NextResponse.json(
       {
         success: true,
@@ -171,7 +183,7 @@ export async function POST(request: NextRequest) {
       { status: 200 }
     );
 
-    // تنظیم Cookie ها
+    // Set cookies
     await setAuthCookies(
       tokens.accessToken,
       tokens.refreshToken,
@@ -179,8 +191,9 @@ export async function POST(request: NextRequest) {
       response
     );
 
-    // Log کردن ورود موفق
-    logAuthEvent('login', userId, true, {
+    // Log successful login
+    logger.info('Login successful', {
+      userId,
       email,
       sessionId,
       duration: `${Date.now() - startTime}ms`
@@ -202,6 +215,5 @@ export async function POST(request: NextRequest) {
   }
 }
 
-// تنظیمات Route
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';

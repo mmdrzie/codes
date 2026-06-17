@@ -1,19 +1,15 @@
 import { SiweMessage, SiweVerifyParams, Web3User, AuthUser } from '@/types/auth';
-import { SiweResponse, verifySignature } from 'siwe';
+import { verifySignature } from 'siwe';
 import { cookies } from 'next/headers';
-import { jwtVerify, SignJWT } from 'jose';
-import { nanoid } from 'nanoid';
 import { getAddress, toBytes, keccak256 } from 'viem';
 import { logger } from '@/lib/logger';
-import { PQCryptoService } from '@/services/crypto/pq-crypto-service';
-import { generateAccessToken, generateRefreshToken, AppJwtPayload } from '@/lib/tokenUtils';
+import { generateAccessToken, AppJwtPayload } from '@/lib/tokenUtils';
+import { getEnterpriseRedisClient } from '@/infrastructure/redis/enterprise-redis-client';
+import { EnterpriseSiweNonceStore } from '@/core/auth/enterprise-siwe-nonce-store';
 
-// In-memory store for nonces with proper security (in production, use Redis or database)
-const nonceStore = new Map<string, { 
-  createdAt: Date; 
-  used: boolean;
-  userId?: string; // Bind nonce to specific user for additional security
-}>();
+// Enterprise nonce store instance (Redis-backed, fail-closed)
+const redisClient = getEnterpriseRedisClient();
+const enterpriseNonceStore = new EnterpriseSiweNonceStore(redisClient);
 
 // Configuration for security
 const NONCE_EXPIRY_MINUTES = 10;
@@ -23,59 +19,53 @@ const MIN_NONCE_LENGTH = 16;
 export class SiweService {
   /**
    * Generate a new cryptographically secure nonce for SIWE authentication
+   * Uses enterprise Redis-backed nonce store (FAILS CLOSED if Redis unavailable)
    */
-  static generateSecureNonce(): string {
-    // Generate a cryptographically secure random nonce
-    const nonce = nanoid(32); // Use 32 chars for better security
-    
-    // Validate nonce length
-    if (nonce.length < MIN_NONCE_LENGTH || nonce.length > MAX_NONCE_LENGTH) {
-      throw new Error('Invalid nonce length');
+  static async generateSecureNonce(address: string): Promise<{ nonce: string; message: string; expiresAt: number }> {
+    // Validate address format
+    const lowerAddress = address.toLowerCase();
+    if (!/^0x[a-fA-F0-9]{40}$/.test(lowerAddress)) {
+      throw new Error('Invalid Ethereum address format');
     }
-    
-    // Store nonce with creation timestamp and used status
-    nonceStore.set(nonce, {
-      createdAt: new Date(),
-      used: false,
+
+    // Use enterprise nonce store - FAILS CLOSED if Redis unavailable
+    const result = await enterpriseNonceStore.generateAndStoreNonce(lowerAddress);
+
+    logger.info('SIWE nonce generated via enterprise store', { 
+      address: lowerAddress.slice(0, 8),
+      expiresAt: new Date(result.expiresAt).toISOString()
     });
-    
-    // Clean up expired nonces
-    this.cleanupExpiredNonces();
-    
-    logger.info('SIWE nonce generated', { nonceHash: this.hashNonce(nonce) });
-    
-    return nonce;
+
+    return result;
   }
 
   /**
-   * Clean up expired nonces to prevent memory leaks
+   * Verify and consume nonce atomically (prevents replay attacks)
+   * Uses enterprise Redis-backed nonce store with Lua scripts
    */
-  private static cleanupExpiredNonces(): void {
-    const now = new Date();
-    const expiryTime = NONCE_EXPIRY_MINUTES * 60 * 1000; // Convert to milliseconds
+  static async verifyAndConsumeNonce(address: string, nonce: string): Promise<boolean> {
+    const lowerAddress = address.toLowerCase();
     
-    for (const [nonce, data] of nonceStore.entries()) {
-      if (now.getTime() - data.createdAt.getTime() > expiryTime) {
-        nonceStore.delete(nonce);
-        logger.info('Expired nonce cleaned up', { nonceHash: this.hashNonce(nonce) });
-      }
-    }
+    // Use enterprise nonce store - atomic verify & consume via Lua script
+    const result = await enterpriseNonceStore.verifyAndConsumeNonce(lowerAddress, nonce);
+    
+    return result.success;
   }
 
   /**
    * Hash nonce for logging (never log actual nonces)
    */
   private static hashNonce(nonce: string): string {
-    return keccak256(toBytes(nonce)).slice(0, 16); // First 8 bytes as hex
+    return keccak256(toBytes(nonce)).slice(0, 16);
   }
 
   /**
    * Create a secure SIWE message with proper validation
    */
   static createSecureSiweMessage(
-    address: string, 
-    domain: string, 
-    nonce: string, 
+    address: string,
+    domain: string,
+    nonce: string,
     chainId: number,
     statement?: string
   ): SiweMessage {
@@ -83,31 +73,30 @@ export class SiweService {
     if (!this.validateEthereumAddress(address)) {
       throw new Error('Invalid Ethereum address');
     }
-    
+
     if (!domain || domain.length < 3 || domain.length > 255) {
       throw new Error('Invalid domain');
     }
-    
+
     if (nonce.length < MIN_NONCE_LENGTH || nonce.length > MAX_NONCE_LENGTH) {
       throw new Error('Invalid nonce length');
     }
-    
-    if (chainId <= 0 || chainId > 999999999) { // Reasonable upper limit
+
+    if (chainId <= 0 || chainId > 999999999) {
       throw new Error('Invalid chain ID');
     }
-    
-    // Create the SIWE message following EIP-4361 specification
+
     const siweMessage: SiweMessage = {
       domain,
       address,
       statement: statement || 'Sign-In With Ethereum to access our service',
-      uri: `https://${domain}`, // Ensure HTTPS URI
+      uri: `https://${domain}`,
       version: '1',
       chainId,
       nonce,
       issuedAt: new Date().toISOString(),
       expirationTime: new Date(Date.now() + NONCE_EXPIRY_MINUTES * 60 * 1000).toISOString(),
-      notBefore: new Date().toISOString(), // Don't allow backdating
+      notBefore: new Date().toISOString(),
     };
 
     return siweMessage;
@@ -117,8 +106,8 @@ export class SiweService {
    * Verify SIWE signature with comprehensive security checks
    */
   static async verifySiweSignature(
-    params: SiweVerifyParams, 
-    expectedDomain: string, 
+    params: SiweVerifyParams,
+    expectedDomain: string,
     expectedNonce: string
   ): Promise<Web3User> {
     try {
@@ -126,27 +115,23 @@ export class SiweService {
       if (!params.message || !params.signature) {
         throw new Error('Missing required SIWE parameters');
       }
-      
+
       if (!expectedDomain || !expectedNonce) {
         throw new Error('Missing expected domain or nonce');
       }
 
-      // Validate nonce hasn't been used and isn't expired
-      const nonceData = nonceStore.get(expectedNonce);
-      if (!nonceData) {
-        logger.warn('Invalid nonce attempt', { 
+      // CRITICAL: Verify and consume nonce atomically using enterprise store
+      const nonceValid = await this.verifyAndConsumeNonce(
+        this.extractAddressFromMessage(params.message) || '',
+        expectedNonce
+      );
+
+      if (!nonceValid) {
+        logger.warn('Invalid or replayed nonce attempt', {
           nonceHash: this.hashNonce(expectedNonce),
-          expectedDomain 
+          expectedDomain
         });
-        throw new Error('Invalid or expired nonce');
-      }
-      
-      if (nonceData.used) {
-        logger.warn('Replay attack detected', { 
-          nonceHash: this.hashNonce(expectedNonce),
-          address: this.extractAddressFromMessage(params.message) 
-        });
-        throw new Error('Nonce already used (replay attack)');
+        throw new Error('Invalid or replayed nonce');
       }
 
       // Parse the SIWE message
@@ -154,50 +139,50 @@ export class SiweService {
       try {
         message = new SiweMessage(params.message);
       } catch (parseError) {
-        logger.warn('Invalid SIWE message format', { 
+        logger.warn('Invalid SIWE message format', {
           error: (parseError as Error).message,
-          message: params.message 
+          message: params.message
         });
         throw new Error('Invalid SIWE message format');
       }
-      
+
       // Validate message fields with strict checks
       if (message.nonce !== expectedNonce) {
-        logger.warn('Nonce mismatch', { 
-          expected: expectedNonce, 
-          actual: message.nonce 
+        logger.warn('Nonce mismatch', {
+          expected: expectedNonce,
+          actual: message.nonce
         });
         throw new Error('Invalid nonce in message');
       }
-      
+
       if (message.domain !== expectedDomain) {
-        logger.warn('Domain mismatch', { 
-          expected: expectedDomain, 
-          actual: message.domain 
+        logger.warn('Domain mismatch', {
+          expected: expectedDomain,
+          actual: message.domain
         });
         throw new Error('Domain mismatch');
       }
-      
+
       // Validate address format
       if (!this.validateEthereumAddress(message.address)) {
         logger.warn('Invalid address in SIWE message', { address: message.address });
         throw new Error('Invalid Ethereum address in message');
       }
-      
+
       // Check if message has expired
       if (message.expirationTime && new Date(message.expirationTime) < new Date()) {
-        logger.warn('SIWE message expired', { 
+        logger.warn('SIWE message expired', {
           expirationTime: message.expirationTime,
-          issuedAt: message.issuedAt 
+          issuedAt: message.issuedAt
         });
         throw new Error('SIWE message has expired');
       }
 
       // Check if message is not yet valid
       if (message.notBefore && new Date(message.notBefore) > new Date()) {
-        logger.warn('SIWE message not yet valid', { 
+        logger.warn('SIWE message not yet valid', {
           notBefore: message.notBefore,
-          currentTime: new Date().toISOString() 
+          currentTime: new Date().toISOString()
         });
         throw new Error('SIWE message is not yet valid');
       }
@@ -210,16 +195,14 @@ export class SiweService {
       });
 
       if (!isValid) {
-        logger.warn('Invalid SIWE signature', { 
+        logger.warn('Invalid SIWE signature', {
           address: message.address,
-          domain: message.domain 
+          domain: message.domain
         });
         throw new Error('Invalid SIWE signature');
       }
 
-      // Mark nonce as used to prevent replay attacks
-      nonceData.used = true;
-      logger.info('SIWE signature verified successfully', { 
+      logger.info('SIWE signature verified successfully', {
         address: message.address,
         domain: message.domain,
         nonceHash: this.hashNonce(expectedNonce)
@@ -239,9 +222,9 @@ export class SiweService {
 
       return web3User;
     } catch (error: any) {
-      logger.error('SIWE verification failed', { 
+      logger.error('SIWE verification failed', {
         error: error.message,
-        stack: error.stack 
+        stack: error.stack
       });
       throw new Error(`SIWE verification failed: ${error.message}`);
     }
@@ -268,7 +251,7 @@ export class SiweService {
    * Create a secure session token for Web3 user with post-quantum security
    */
   static async createSecureSessionToken(
-    user: Web3User, 
+    user: Web3User,
     deviceFingerprint?: { userAgent?: string; ipAddress?: string; sessionId?: string },
     additionalClaims?: Record<string, any>
   ): Promise<string> {
@@ -277,7 +260,7 @@ export class SiweService {
       if (!this.validateEthereumAddress(user.address)) {
         throw new Error('Invalid user address');
       }
-      
+
       // Prepare the payload for the new token system
       const tokenPayload = {
         userId: user.address,
@@ -291,16 +274,16 @@ export class SiweService {
       // Generate access token using post-quantum crypto
       const token = await generateAccessToken(tokenPayload, deviceFingerprint);
 
-      logger.info('Web3 session token created with PQ security', { 
+      logger.info('Web3 session token created with PQ security', {
         address: user.address,
-        chainId: user.chainId 
+        chainId: user.chainId
       });
 
       return token;
     } catch (error: any) {
-      logger.error('Web3 session token creation failed', { 
+      logger.error('Web3 session token creation failed', {
         error: error.message,
-        address: user.address 
+        address: user.address
       });
       throw new Error(`Web3 session token creation failed: ${error.message}`);
     }
@@ -311,18 +294,18 @@ export class SiweService {
    */
   static async verifySecureSessionToken(token: string): Promise<AuthUser> {
     try {
-      // Verify JWT with post-quantum security
+      const { verifyAccessToken } = await import('@/lib/tokenUtils');
       const payload = await verifyAccessToken(token);
-      
+
       if (!payload) {
         throw new Error('Invalid token: failed post-quantum verification');
       }
-      
+
       // Validate required fields
       if (!payload.userId) {
         throw new Error('Invalid token: missing address');
       }
-      
+
       if (!this.validateEthereumAddress(payload.userId as string)) {
         throw new Error('Invalid token: invalid address format');
       }
@@ -339,43 +322,22 @@ export class SiweService {
         },
         createdAt: new Date(payload.iat ? payload.iat * 1000 : Date.now()),
         lastSignInAt: new Date(),
-        isVerified: true, // Web3 users are verified by signature
+        isVerified: true,
       };
 
-      logger.info('Web3 session token verified with PQ security', { 
+      logger.info('Web3 session token verified with PQ security', {
         address: payload.userId,
-        userId: authUser.id 
+        userId: authUser.id
       });
 
       return authUser;
     } catch (error: any) {
-      logger.error('Web3 session token verification failed', { 
+      logger.error('Web3 session token verification failed', {
         error: error.message,
-        stack: error.stack 
+        stack: error.stack
       });
       throw new Error(`Web3 session token verification failed: ${error.message}`);
     }
-  }
-
-  /**
-   * Check for replay attacks using JWT ID
-   */
-  private static async checkForReplayAttack(jti: string): Promise<boolean> {
-    // In production, use Redis or database with TTL
-    // For now, use in-memory tracking with cleanup
-    if (replayAttackTracker.has(jti)) {
-      return true;
-    }
-    
-    // Add to tracker with cleanup
-    replayAttackTracker.add(jti);
-    
-    // Schedule cleanup after token expiry time (plus buffer)
-    setTimeout(() => {
-      replayAttackTracker.delete(jti);
-    }, 25 * 60 * 1000); // 25 minutes (24h + buffer)
-    
-    return false;
   }
 
   /**
@@ -383,23 +345,21 @@ export class SiweService {
    */
   static setSecureSessionCookie(token: string, additionalOptions?: { tenantId?: string }): void {
     const cookieStore = cookies();
-    
-    // Set primary session cookie
+
     cookieStore.set('web3_auth_session', token, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'strict',
-      maxAge: 24 * 60 * 60, // 24 hours
+      maxAge: 24 * 60 * 60,
       path: '/',
     });
-    
-    // Set tenant ID cookie if provided
+
     if (additionalOptions?.tenantId) {
       cookieStore.set('tenant_id', additionalOptions.tenantId, {
-        httpOnly: false, // Can be read by frontend for UI purposes
+        httpOnly: false,
         secure: process.env.NODE_ENV === 'production',
         sameSite: 'strict',
-        maxAge: 24 * 60 * 60, // 24 hours
+        maxAge: 24 * 60 * 60,
         path: '/',
       });
     }
@@ -421,13 +381,11 @@ export class SiweService {
       if (!address || typeof address !== 'string') {
         return false;
       }
-      
-      // Check for basic format
+
       if (!address.startsWith('0x') || address.length !== 42) {
         return false;
       }
-      
-      // Validate using viem
+
       const validAddress = getAddress(address as `0x${string}`);
       return validAddress === address;
     } catch {
@@ -439,14 +397,13 @@ export class SiweService {
    * Get user session (either Firebase or Web3)
    */
   static async getUserSession(): Promise<AuthUser | null> {
-    // Try Web3 session first
     const web3Token = this.getWeb3SessionCookie();
     if (web3Token) {
       try {
         return await this.verifySecureSessionToken(web3Token);
       } catch (error) {
-        logger.warn('Web3 session verification failed', { 
-          error: (error as Error).message 
+        logger.warn('Web3 session verification failed', {
+          error: (error as Error).message
         });
       }
     }
@@ -462,6 +419,3 @@ export class SiweService {
     return cookieStore.get('web3_auth_session')?.value;
   }
 }
-
-// In-memory replay attack tracker (use Redis in production)
-const replayAttackTracker = new Set<string>();

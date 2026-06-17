@@ -1,18 +1,25 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { ethers } from 'ethers';
 import { walletAuthSchema } from '@/lib/validation';
-import { verifyAndConsumeNonce } from '@/lib/wallet';
 import { validateWalletAddress } from '@/lib/security';
 import { generateTokenPair } from '@/lib/tokenUtils';
-import { createSession } from '@/lib/sessionUtils';
 import { setAuthCookies } from '@/lib/cookies';
-import { checkRateLimit, getIdentifier } from '@/lib/rateLimit';
-import { logger, logAuthEvent, logSecurityEvent } from '@/lib/logger';
+import { getEnterpriseRedisClient } from '@/infrastructure/redis/enterprise-redis-client';
+import { EnterpriseRateLimiter } from '@/core/ratelimit/enterprise-rate-limiter';
+import { EnterpriseSessionManager } from '@/core/session/enterprise-session-manager';
+import { EnterpriseSiweNonceStore } from '@/core/auth/enterprise-siwe-nonce-store';
+import { logger } from '@/lib/logger';
 import { getClientIp, getUserAgent } from '@/lib/helpers';
 import { getAdminDb } from '@/lib/firebase';
 
+// Initialize enterprise components
+const redisClient = getEnterpriseRedisClient();
+const rateLimiter = new EnterpriseRateLimiter(redisClient);
+const sessionManager = new EnterpriseSessionManager(redisClient);
+const nonceStore = new EnterpriseSiweNonceStore(redisClient);
+
 /**
- * تایید Signature با ethers.js
+ * Verify signature with ethers.js
  */
 async function verifySignature(
   address: string,
@@ -20,10 +27,7 @@ async function verifySignature(
   signature: string
 ): Promise<boolean> {
   try {
-    // بازیابی آدرس از Signature
     const recoveredAddress = ethers.verifyMessage(message, signature);
-
-    // مقایسه آدرس‌ها (case-insensitive)
     return recoveredAddress.toLowerCase() === address.toLowerCase();
   } catch (error) {
     logger.error('Signature verification failed', { error, address });
@@ -36,34 +40,37 @@ export async function POST(request: NextRequest) {
   let walletAddress: string | undefined;
 
   try {
-    // بررسی Rate Limit
-    const identifier = getIdentifier(request);
-    const db = getAdminDb();
-    const rateLimitResult = await checkRateLimit(identifier, 'walletAuth');
+    // CRITICAL: Apply rate limiting FIRST - FAILS CLOSED
+    const identifier = getClientIp(request) || 'unknown';
+    const rateLimitResult = await rateLimiter.checkRateLimit(
+      `wallet_auth:${identifier}`,
+      'auth:wallet'
+    );
 
     if (!rateLimitResult.allowed) {
-      logSecurityEvent('rate_limit_exceeded', 'medium', {
+      logger.warn('Wallet auth rate limit exceeded', {
         identifier,
-        endpoint: '/api/auth/wallet'
+        resetAt: new Date(rateLimitResult.resetAt).toISOString()
       });
 
       return NextResponse.json(
         {
-          error: rateLimitResult.message,
+          error: 'Rate limit exceeded. Please try again later.',
           resetAt: rateLimitResult.resetAt
         },
         {
           status: 429,
           headers: {
-            'X-RateLimit-Limit': '10',
+            'X-RateLimit-Limit': rateLimitResult.policy?.maxRequests.toString() || '10',
             'X-RateLimit-Remaining': rateLimitResult.remaining.toString(),
-            'X-RateLimit-Reset': rateLimitResult.resetAt.toString()
+            'X-RateLimit-Reset': new Date(rateLimitResult.resetAt).toISOString(),
+            'Retry-After': Math.ceil((rateLimitResult.resetAt - Date.now()) / 1000).toString()
           }
         }
       );
     }
 
-    // دریافت و Validation داده
+    // Parse and validate request body
     const body = await request.json();
     const validation = walletAuthSchema.safeParse(body);
 
@@ -83,9 +90,9 @@ export async function POST(request: NextRequest) {
     const { address, signature, nonce } = validation.data;
     walletAddress = address;
 
-    // Validation اضافی آدرس
+    // Additional address validation
     if (!validateWalletAddress(address)) {
-      logSecurityEvent('invalid_wallet_address_auth', 'medium', {
+      logger.warn('Invalid wallet address format', {
         address,
         ip: getClientIp(request)
       });
@@ -96,32 +103,33 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // تایید Nonce
-    const nonceOk = await verifyAndConsumeNonce(address, nonce);
+    // CRITICAL: Verify and consume nonce atomically using enterprise store
+    const lowerAddress = address.toLowerCase();
+    const nonceValid = await nonceStore.verifyAndConsumeNonce(lowerAddress, nonce);
 
-    if (!nonceOk) {
-      logSecurityEvent('invalid_nonce_wallet_auth', 'medium', {
+    if (!nonceValid) {
+      logger.warn('Invalid or replayed nonce in wallet auth', {
         address: `${address.slice(0, 6)}...${address.slice(-4)}`,
         ip: getClientIp(request)
       });
 
       return NextResponse.json(
-        { error: 'Invalid nonce' },
+        { error: 'Invalid or replayed nonce' },
         { status: 401 }
       );
     }
 
-    // تایید Signature
+    // Verify signature
     const message = `Sign this message to authenticate: ${nonce}`;
     const isValidSignature = await verifySignature(address, message, signature);
 
     if (!isValidSignature) {
-      logSecurityEvent('invalid_signature_wallet_auth', 'high', {
+      logger.warn('Invalid signature in wallet auth', {
         address: `${address.slice(0, 6)}...${address.slice(-4)}`,
         ip: getClientIp(request)
       });
 
-      // تاخیر برای جلوگیری از Brute Force
+      // Delay to prevent brute force
       await new Promise(resolve => setTimeout(resolve, 1000));
 
       return NextResponse.json(
@@ -129,27 +137,12 @@ export async function POST(request: NextRequest) {
         { status: 401 }
       );
     }
-    
-    // Additional security: Validate that the signature was created recently
-    // This helps prevent replay attacks even with nonce checking
-    const nonceTimestamp = parseInt(nonce.split('-')[1] || '0');
-    if (nonceTimestamp && Date.now() - nonceTimestamp > 300000) { // 5 minutes
-      logSecurityEvent('expired_nonce_wallet_auth', 'medium', {
-        address: `${address.slice(0, 6)}...${address.slice(-4)}`,
-        ip: getClientIp(request),
-        nonceAge: Date.now() - nonceTimestamp
-      });
-      
-      return NextResponse.json(
-        { error: 'Nonce has expired. Please try again.' },
-        { status: 401 }
-      );
-    }
 
-    // جستجو یا ایجاد کاربر
+    // Look up or create user
+    const db = getAdminDb();
     const userQuery = await db
       .collection('users')
-      .where('walletAddress', '==', address.toLowerCase())
+      .where('walletAddress', '==', lowerAddress)
       .get();
 
     let userId: string;
@@ -157,9 +150,9 @@ export async function POST(request: NextRequest) {
     let isNewUser = false;
 
     if (userQuery.empty) {
-      // ایجاد کاربر جدید
+      // Create new user
       const newUser = {
-        walletAddress: address.toLowerCase(),
+        walletAddress: lowerAddress,
         authMethod: 'wallet',
         status: 'active',
         createdAt: new Date(),
@@ -178,7 +171,7 @@ export async function POST(request: NextRequest) {
         address: `${address.slice(0, 6)}...${address.slice(-4)}`
       });
     } else {
-      // کاربر موجود
+      // Existing user
       const firstDoc = userQuery.docs[0];
       if (!firstDoc) {
         return NextResponse.json({ error: 'User lookup failed' }, { status: 500 });
@@ -187,9 +180,9 @@ export async function POST(request: NextRequest) {
       userId = firstDoc.id;
       userData = firstDoc.data();
 
-      // بررسی وضعیت حساب
+      // Check account status
       if (userData.status === 'blocked') {
-        logSecurityEvent('blocked_user_login_attempt', 'high', {
+        logger.warn('Blocked user login attempt', {
           userId,
           address: `${address.slice(0, 6)}...${address.slice(-4)}`,
           ip: getClientIp(request)
@@ -201,35 +194,42 @@ export async function POST(request: NextRequest) {
         );
       }
 
-      // بروزرسانی اطلاعات کاربر
+      // Update user info
       await db.collection('users').doc(userId).update({
         lastLogin: new Date(),
         lastLoginIp: getClientIp(request)
       });
     }
 
-    // تولید Token ها
+    // Generate tokens
     const tokens = generateTokenPair({
       userId,
       tenantId: userData.tenantId,
-      walletAddress: address.toLowerCase(),
+      walletAddress: lowerAddress,
       authMethod: 'wallet'
     });
 
-    // ایجاد Session
-    const sessionId = createSession(userId, userData.tenantId, {
-      ipAddress: getClientIp(request),
-      userAgent: getUserAgent(request)
-    });
+    // Create session using enterprise session manager
+    const sessionId = await sessionManager.createSession({
+      userId,
+      tenantId: userData.tenantId || 'default',
+      deviceFingerprint: getUserAgent(request) || 'unknown',
+      ipAddress: getClientIp(request) || 'unknown',
+      userAgent: getUserAgent(request) || 'unknown',
+      authMethod: 'wallet',
+      walletAddress: lowerAddress,
+      roles: ['user'],
+      permissions: []
+    }).then(s => s.sessionId);
 
-    // ایجاد Response
+    // Create response
     const response = NextResponse.json(
       {
         success: true,
         isNewUser,
         user: {
           id: userId,
-          walletAddress: address.toLowerCase(),
+          walletAddress: lowerAddress,
           tenantId: userData.tenantId || null
         },
         expiresIn: tokens.expiresIn
@@ -237,7 +237,7 @@ export async function POST(request: NextRequest) {
       { status: isNewUser ? 201 : 200 }
     );
 
-    // تنظیم Cookie ها
+    // Set cookies
     await setAuthCookies(
       tokens.accessToken,
       tokens.refreshToken,
@@ -245,9 +245,9 @@ export async function POST(request: NextRequest) {
       response
     );
 
-    // Log کردن ورود موفق
-    logAuthEvent('login', userId, true, {
-      authMethod: 'wallet',
+    // Log successful login
+    logger.info('Wallet authentication successful', {
+      userId,
       address: `${address.slice(0, 6)}...${address.slice(-4)}`,
       isNewUser,
       sessionId,
@@ -270,6 +270,5 @@ export async function POST(request: NextRequest) {
   }
 }
 
-// تنظیمات Route
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
